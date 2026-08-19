@@ -4,24 +4,39 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from dotenv import load_dotenv
+try:                        # optional; absent on PythonAnywhere free accounts
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-load_dotenv()
+try:                        # PythonAnywhere: a plain python file holding your keys
+    import pa_config as _local
+except ImportError:
+    _local = None
+
+
+def _get(name: str, default: str = "") -> str:
+    """Look in pa_config.py first, then environment variables."""
+    if _local is not None and hasattr(_local, name):
+        return str(getattr(_local, name))
+    return os.getenv(name, default)
 
 # ---------------------------------------------------------------- credentials
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
+TELEGRAM_BOT_TOKEN = _get("TELEGRAM_BOT_TOKEN")
+TWELVEDATA_API_KEY = _get("TWELVEDATA_API_KEY")
+WEBHOOK_SECRET = _get("WEBHOOK_SECRET", "change-me")
 
 # Comma-separated Telegram user IDs allowed to use the bot. Empty = allow all.
-_raw_allowed = os.getenv("ALLOWED_USER_IDS", "").strip()
+_raw_allowed = _get("ALLOWED_USER_IDS").strip()
 ALLOWED_USER_IDS = {
     int(x) for x in _raw_allowed.replace(" ", "").split(",") if x.isdigit()
 } if _raw_allowed else set()
 
 # ---------------------------------------------------------------- risk config
-ACCOUNT_BALANCE = float(os.getenv("ACCOUNT_BALANCE", "5000"))
-RISK_PCT = float(os.getenv("RISK_PCT", "1.0"))          # % of balance per trade
-CONTRACT_SIZE = float(os.getenv("CONTRACT_SIZE", "100"))  # oz per 1.00 lot XAUUSD
+ACCOUNT_BALANCE = float(_get("ACCOUNT_BALANCE", "5000"))
+RISK_PCT = float(_get("RISK_PCT", "1.0"))          # % of balance per trade
+CONTRACT_SIZE = float(_get("CONTRACT_SIZE", "100"))  # oz per 1.00 lot XAUUSD
 
 # ---------------------------------------------------------------- symbol map
 SYMBOL_ALIASES = {

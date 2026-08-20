@@ -129,7 +129,7 @@ versus what the market paid. To fold that correction into live signals, open a *
 console** and run:
 
 ```
-cd ~/signalbot
+cd ~/Benihana-Bot
 python3 backtest.py --mode intraday --live --calibrate
 ```
 

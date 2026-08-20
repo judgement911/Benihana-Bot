@@ -263,27 +263,27 @@ def format_stats(key: str = None, mode: str = None) -> str:
                 "For a historical read instead: <code>/backtest intraday</code>")
 
     lines = [f"<b>{title}</b>", ""]
-    lines.append(f"Signals: {s['total']}")
+    lines.append(f"📈 Signals: <b>{s['total']}</b>")
     if not s["settled"]:
         lines.append(f"Still open: {s['open']}")
         lines.append("")
         lines.append("<i>Nothing has resolved yet — no win rate to report.</i>")
         return "\n".join(lines)
 
-    lines.append(f"Wins: {s['wins']}")
-    lines.append(f"Losses: {s['losses']}")
-    lines.append(f"Win Rate: {s['win_rate']:.1%}")
+    lines.append(f"✅ Wins: <b>{s['wins']}</b>")
+    lines.append(f"❌ Losses: <b>{s['losses']}</b>")
+    lines.append(f"🎯 Win Rate: <b>{s['win_rate']:.1%}</b>")
     if s["avg_rr"]:
-        lines.append(f"Avg RR: 1:{s['avg_rr']:.2g}")
+        lines.append(f"⚖️ Avg RR: 1:{s['avg_rr']:.2g}")
     if s["profit_factor"] is not None:
         pf = "∞" if s["profit_factor"] == float("inf") else f"{s['profit_factor']:.2f}"
-        lines.append(f"Profit Factor: {pf}")
-    lines.append(f"Expectancy: {s['expectancy_r']:+.2f}R per signal")
-    lines.append(f"Total: {s['total_r']:+.1f}R")
+        lines.append(f"💹 Profit Factor: <b>{pf}</b>")
+    lines.append(f"📊 Expectancy: {s['expectancy_r']:+.2f}R per signal")
+    lines.append(f"💰 Total: {s['total_r']:+.1f}R")
 
     if s["recent"]:
-        strip = " ".join("W" if o == WIN else "L" for o in s["recent"])
-        lines += ["", f"Last {len(s['recent'])}:", f"<code>{strip}</code>"]
+        strip = " ".join("🟩" if o == WIN else "🟥" for o in s["recent"])
+        lines += ["", f"Last {len(s['recent'])}:", strip]
 
     tail = []
     if s["open"]:

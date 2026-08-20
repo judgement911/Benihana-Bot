@@ -1,18 +1,22 @@
-# XAUUSD Signal Bot
+# Benihana Signal Bot
 
 Type `/signal xauusd scalp` in Telegram. Get back **ENTRY**, **WAIT**, or **NO TRADE**
-with three percentages, a stop, targets, and position size.
+with a stop, targets, position size, and the odds it puts on them.
 
 ```
-✅ ENTRY — SELL
-Confluence    82%  ███████████░░░
-Confidence    68%  ██████████░░░░
-P(TP1 1R)     55%  ████████░░░░░░
-P(TP2 2R)     37%  █████░░░░░░░░░
+🔴 SELL · XAUUSD
+SCALP · 5min · 19:45 UTC
 
-Expectancy  +0.16R  half at TP1, rest to TP2
-Breakeven      52%  win rate needed at 1R
+Entry        2,569.09  market
+Stop Loss    2,576.34  7.3 pts
+TP 1         2,561.84  1R
+TP 2         2,554.58  2R
+0.07 lots · $50 risk · 1:2 R:R
+Confidence 60% · Odds 53% · Exp +0.17R
 ```
+
+Tap **Details** for the full scorecard, the confidence deductions, and where
+the odds came from. 43 instruments across forex, metals, energy and indices.
 
 ---
 
@@ -215,17 +219,90 @@ Your laptop closing kills the bot. Cheapest reliable options:
 |---|---|
 | `/signal xauusd scalp` | full analysis |
 | `/signal scalp` | same, gold is the default |
-| `/signal xauusd` | same, intraday is the default |
+| `/signal nas100` | same, intraday is the default |
+| `/crazymode` | scan every market in `SCAN_SYMBOLS` and rank what it finds |
+| `/stats xauusd` | what the bot has actually delivered — see below |
+| `/alert xauusd scalp` | get pinged when a setup appears (needs the scan job) |
+| `/news xauusd` | Forex Factory calendar, filtered to what moves this symbol |
+| `/symbols` | the tradeable universe |
 | `/strategy` | what the bot checks, in-chat |
 | `/backtest intraday` | runs the backtest and replies with the results in chat |
 | `/backtest intraday calibrate` | same run, and the measured odds replace the model's guess from then on |
 | `/calibration` | are the odds measured or modelled? shows the sample behind them |
 | `/whoami` | your Telegram user ID |
 
-Every reply has Scalp / Intraday / Swing buttons to re-run instantly.
+Every reply has Scalp / Intraday / Swing buttons, plus **Details** to expand
+the reasoning and **Refresh** to re-run.
 
-Other symbols work too: `gold`, `silver`, `eurusd`, `gbpusd`, `usdjpy`, `btc`.
-Add more in `SYMBOL_ALIASES` in `config.py`.
+### Symbols
+
+43 CFDs: 28 forex pairs, 4 metals, 3 energy, 8 indices. Nicknames work —
+`gold`, `cable`, `aussie`, `nas100`, `guppy`. No crypto: it trades weekends,
+and the session windows in `MODES` are built around London and New York.
+
+Your data plan probably does not serve all of them. Free tiers generally
+cover FX and metals; indices and energy usually need paying. Find out
+without guessing:
+
+```bash
+python check_universe.py            # probes every symbol, prints what works
+```
+
+It ends with a `SCAN_SYMBOLS = "..."` line you can paste into your config.
+
+### `/stats` — the part most signal bots skip
+
+Every ENTRY is written to `journal.json` **when it is issued**, before the
+outcome is known, and graded later against candles the bot had never seen. A
+bar that touches both the target and the stop counts as the stop, same
+pessimistic rule the backtester uses.
+
+```
+XAUUSD — BENIHANA PERFORMANCE
+
+Signals: 31
+Wins: 21
+Losses: 9
+Win Rate: 70.0%
+Avg RR: 1:2
+Profit Factor: 2.27
+Expectancy: +0.40R per signal
+
+Last 20:
+L W L W W W L W L W W W W W W L W W L W
+
+Claimed 53% on these, paid 70% — the model was pessimistic.
+```
+
+That last line is the point: the bot grades its own forecast. It starts
+empty and stays empty until real signals resolve. It will not invent a
+track record to fill the screen.
+
+### `/alert` — and the thing you need to know about it
+
+`/alert xauusd scalp` subscribes you. But this bot is a **webhook** — it only
+runs when Telegram pokes it, so it cannot watch the market on its own.
+Something has to run the scanner on a schedule:
+
+```bash
+python scan_job.py              # sweep every subscription, push what it finds
+python scan_job.py --dry-run    # see what would be sent, send nothing
+```
+
+On PythonAnywhere: **Tasks** tab → `python3 ~/Benihana-Bot/scan_job.py`. A
+free account gets **one scheduled task per day**, so alerts fire once daily.
+Hourly needs a paid plan, or run the job from any machine that stays on.
+
+### `/news`
+
+Reads the real Forex Factory calendar and filters it to the currencies that
+move your instrument — gold answers to USD, GER40 to EUR, EUR/USD to both
+legs. Times print in your timezone (`NEWS_TZ_OFFSET`, default UTC+7 WIB).
+
+On a PythonAnywhere free account this will fail: outbound traffic is limited
+to a whitelist and the Forex Factory feed is not on it. `/news` says so
+plainly rather than hanging. Price data still works because Twelve Data is
+whitelisted.
 
 ---
 

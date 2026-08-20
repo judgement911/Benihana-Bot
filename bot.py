@@ -21,7 +21,13 @@ import probability as prob
 from backtest import build_calibration, write_calibration
 from backtest import run as backtest_run
 from data import DataError, fetch_ohlc
-from strategy import DIR_NAME, evaluate
+import alerts
+import instruments as I
+import journal
+import news
+import scanner
+import view
+from strategy import evaluate
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s — %(message)s", level=logging.INFO
@@ -40,119 +46,35 @@ def allowed(update: Update) -> bool:
     return bool(user and user.id in C.ALLOWED_USER_IDS)
 
 
-def parse_args(args: list[str]) -> tuple[str, str, str | None]:
-    """Accepts any order: '/signal xauusd scalp', '/signal scalp', '/signal gold'."""
-    symbol_key, mode = "xauusd", "intraday"
-    found_symbol = found_mode = False
+MODE_WORDS = {"day": "intraday", "daytrade": "intraday", "intra": "intraday",
+              "scalping": "scalp", "scalper": "scalp", "swings": "swing"}
 
+
+def parse_args(args: list[str], default_symbol: str = "xauusd",
+               default_mode: str = "intraday") -> tuple[str, str, str | None]:
+    """Any order, any spelling. Third element names an unrecognised word."""
+    symbol_key, mode, unknown = default_symbol, default_mode, None
     for raw in args:
-        a = raw.lower().strip().replace("/", "").replace("-", "")
-        if a in C.MODES and not found_mode:
-            mode, found_mode = a, True
-        elif a in C.SYMBOL_ALIASES and not found_symbol:
-            symbol_key, found_symbol = a, True
-        elif a in ("scalping", "scalper"):
-            mode, found_mode = "scalp", True
-        elif a in ("day", "daytrade", "intra"):
-            mode, found_mode = "intraday", True
-
-    for raw in args:
-        a = raw.lower().strip()
-        if not found_symbol and a not in C.MODES and len(a) >= 3:
-            return C.SYMBOL_ALIASES.get(a, "XAU/USD"), mode, (
-                None if a in C.SYMBOL_ALIASES else f"Unknown symbol '{raw}', used XAU/USD."
-            )
-
-    return C.SYMBOL_ALIASES[symbol_key], mode, None
+        a = raw.lower().strip().lstrip("/")
+        if not a or a in ("calibrate", "off", "on", "clear", "stop"):
+            continue
+        if a in C.MODES:
+            mode = a
+        elif a in MODE_WORDS:
+            mode = MODE_WORDS[a]
+        else:
+            inst = I.find(a)
+            if inst:
+                symbol_key = inst.key
+            elif len(a) >= 2:
+                unknown = raw
+    return symbol_key, mode, unknown
 
 
-def fmt_price(x: float) -> str:
-    return f"{x:,.2f}"
-
-
-def render(symbol: str, res: dict) -> str:
-    mode = res["mode"].upper()
-    head = f"<b>{symbol} · {mode}</b>\n"
-    head += f"<code>{fmt_price(res['price'])}</code> · candle closed "
-    head += f"{res['as_of'].strftime('%H:%M')} UTC\n"
-    tfs = res["timeframes"]
-    head += f"<i>{tfs['entry']} trigger / {tfs['trend']} trend / {tfs['bias']} bias</i>\n\n"
-
-    dec = res["decision"]
-
-    # --- vetoed outright -------------------------------------------------- #
-    if res["vetoes"]:
-        body = "🚫 <b>NO TRADE</b>\n"
-        body += "Confidence <b>0%</b> · no probability quoted\n"
-        body += "<i>Hard filter blocked this — score not even calculated.</i>\n\n"
-        for v in res["vetoes"]:
-            body += f"• {v}\n"
-        return head + body
-
-    icon = {"ENTRY": "✅", "WAIT": "⏳", "NO TRADE": "🚫"}[dec]
-    label = f"{DIR_NAME[res['direction']]}" if dec == "ENTRY" else dec
-    body = f"{icon} <b>{dec}"
-    if dec == "ENTRY":
-        body += f" — {label}"
-    body += "</b>\n"
-    body += f"<pre>{html.escape(prob.read_block(res))}</pre>\n"
-
-    drags = prob.drag_note(res)
-    if drags:
-        body += f"<i>{html.escape(drags)}</i>\n"
-    basis = prob.basis_note(res)
-    if basis:
-        body += f"<i>Odds: {html.escape(basis)}</i>\n"
-    body += "\n"
-
-    lv = res["levels"]
-    if dec == "ENTRY" and lv:
-        body += "<b>Trade plan</b>\n<pre>"
-        body += f"Entry  {fmt_price(lv['entry'])}  (market)\n"
-        body += f"Stop   {fmt_price(lv['stop'])}  ({lv['risk_points']} pts risk)\n"
-        for n, (tp, m) in enumerate(zip(lv["tps"], lv["tp_multiples"]), start=1):
-            body += f"TP{n}    {fmt_price(tp)}  ({m}R)\n"
-        body += f"Size   {lv['lots']} lots = ${lv['risk_cash']} risk\n"
-        body += f"ATR    {lv['atr']} pts</pre>\n"
-    elif lv:
-        body += (
-            f"<i>If it does trigger: stop would sit near {fmt_price(lv['stop'])}, "
-            f"{lv['risk_points']} pts away.</i>\n\n"
-        )
-
-    body += "<b>Scorecard</b>\n"
-    for r in res["reasons"]:
-        mark = "✓" if r["ok"] else "✗"
-        body += f"{mark} {r['text']} <code>[{r['points']:.0f}/{r['max']}]</code>\n"
-
-    if dec != "ENTRY" and res["missing"]:
-        body += "\n<b>Waiting on</b>\n"
-        for m in res["missing"][:4]:
-            body += f"• {m}\n"
-
-    if res.get("news_warning"):
-        body += "\n⚠️ <i>High-impact US data often lands this hour. Check the calendar.</i>\n"
-
-    return head + body
-
-
-def keyboard(symbol_key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("Scalp", callback_data=f"s|{symbol_key}|scalp"),
-                InlineKeyboardButton("Intraday", callback_data=f"s|{symbol_key}|intraday"),
-                InlineKeyboardButton("Swing", callback_data=f"s|{symbol_key}|swing"),
-            ]
-        ]
-    )
-
-
-# --------------------------------------------------------------------------- #
-#  Core analysis (runs the blocking HTTP calls off the event loop)
-# --------------------------------------------------------------------------- #
-async def analyse(symbol: str, mode: str) -> dict:
+async def analyse(symbol_key: str, mode: str) -> dict:
     spec = C.MODES[mode]
+    inst = I.BY_KEY.get(symbol_key, I.GOLD)
+    symbol = inst.symbol
     loop = asyncio.get_running_loop()
 
     entry_df, trend_df, bias_df = await asyncio.gather(
@@ -161,7 +83,8 @@ async def analyse(symbol: str, mode: str) -> dict:
         loop.run_in_executor(None, fetch_ohlc, symbol, spec.bias_tf, spec.bars),
     )
 
-    return evaluate(entry_df, trend_df, bias_df, spec, datetime.now(timezone.utc))
+    return evaluate(entry_df, trend_df, bias_df, spec,
+                    datetime.now(timezone.utc), instrument=inst)
 
 
 # --------------------------------------------------------------------------- #
@@ -226,33 +149,43 @@ async def cmd_strategy(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def do_signal(symbol: str, mode: str, send, edit=None) -> None:
+def keyboard(symbol_key: str, mode: str, verbose: bool = False) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(lbl, callback_data=cb) for lbl, cb in row]
+        for row in view.buttons(symbol_key, mode, verbose)
+    ])
+
+
+async def do_signal(symbol_key: str, mode: str, send, edit=None,
+                    verbose: bool = False) -> None:
+    inst = I.BY_KEY.get(symbol_key, I.GOLD)
     # render() used to sit in an else: clause, which is NOT covered by the
     # except handlers above it. Any error formatting the reply escaped, the
     # placeholder was never edited, and the chat sat on "Reading…" forever.
     # Rendering belongs inside the try.
     try:
-        res = await analyse(symbol, mode)
-        text = render(symbol, res)
+        res = await analyse(symbol_key, mode)
+        text = view.render(inst.display, res, verbose)
+        journal.record(res)   # graded later by /stats
     except DataError as exc:
         text = f"⚠️ <b>Data problem</b>\n{html.escape(str(exc))}"
     except Exception as exc:  # noqa: BLE001
         log.exception("signal failed")
         text = f"⚠️ Unexpected error: <code>{html.escape(type(exc).__name__)}</code>"
 
-    key = symbol.replace("/", "").lower()
+    key = inst.key
     deliver = edit or send
 
     # Last line of defence: if Telegram rejects the HTML — an unescaped angle
     # bracket in an error string is enough — resend as plain text rather than
     # leaving the placeholder stranded.
     try:
-        await deliver(text, parse_mode=ParseMode.HTML, reply_markup=keyboard(key))
+        await deliver(text, parse_mode=ParseMode.HTML, reply_markup=keyboard(key, mode, verbose))
     except Exception:  # noqa: BLE001
         log.exception("HTML delivery failed, falling back to plain text")
         stripped = re.sub(r"<[^>]+>", "", text)
         try:
-            await deliver(stripped, reply_markup=keyboard(key))
+            await deliver(stripped, reply_markup=keyboard(key, mode, verbose))
         except Exception:  # noqa: BLE001
             log.exception("plain-text delivery failed too")
 
@@ -262,14 +195,15 @@ async def cmd_signal(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Not authorised.")
         return
 
-    symbol, mode, warning = parse_args(ctx.args or [])
+    symbol_key, mode, warning = parse_args(ctx.args or [])
+    inst = I.BY_KEY[symbol_key]
     placeholder = await update.message.reply_text(
-        f"⏳ Reading {symbol} {mode}…"
+        f"⏳ Reading {inst.display} {mode}…"
     )
     if warning:
         await update.message.reply_text(warning)
 
-    await do_signal(symbol, mode, update.message.reply_text, placeholder.edit_text)
+    await do_signal(symbol_key, mode, update.message.reply_text, placeholder.edit_text)
 
 
 async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -278,9 +212,10 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not allowed(update):
         return
 
-    _, symbol_key, mode = q.data.split("|")
-    symbol = C.SYMBOL_ALIASES.get(symbol_key, "XAU/USD")
-    await do_signal(symbol, mode, q.message.reply_text, q.edit_message_text)
+    parts = q.data.split("|")
+    _, symbol_key, mode = parts[:3]
+    verbose = len(parts) > 3 and parts[3] == "v"
+    await do_signal(symbol_key, mode, q.message.reply_text, q.edit_message_text, verbose)
 
 
 def save_calibration(stats: dict, mode: str, symbol: str, bars: int) -> str:
@@ -313,10 +248,12 @@ async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     calibrate = any(a.lower().lstrip("-") == "calibrate" for a in args)
     args = [a for a in args if a.lower().lstrip("-") != "calibrate"]
 
-    symbol, mode, _ = parse_args(args)
+    symbol_key, mode, _ = parse_args(args)
+    inst = I.BY_KEY[symbol_key]
+    symbol = inst.symbol
     spec = C.MODES[mode]
     msg = await update.message.reply_text(
-        f"⏱ Backtesting {symbol} {mode} on {spec.entry_tf} history.\n"
+        f"⏱ Backtesting {inst.display} {mode} on {spec.entry_tf} history.\n"
         f"This takes 1–4 minutes. I'll edit this message when done."
     )
 
@@ -324,7 +261,7 @@ async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         df = await loop.run_in_executor(None, fetch_ohlc, symbol, spec.entry_tf, 5000)
         stats, report = await loop.run_in_executor(None, backtest_run, df, mode)
-        header = f"<b>{symbol} {mode} backtest</b>\n{len(df)} × {spec.entry_tf} bars\n"
+        header = f"<b>{inst.display} {mode} backtest</b>\n{len(df)} × {spec.entry_tf} bars\n"
         text = header + f"<pre>{html.escape(report)}</pre>"
         if calibrate:
             text += "\n" + html.escape(
@@ -349,6 +286,114 @@ async def cmd_calibration(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not allowed(update):
+        return
+    args = list(ctx.args or [])
+    symbol_key, mode, _ = parse_args(args)
+    explicit_mode = any(a.lower().lstrip("/") in C.MODES or a.lower() in MODE_WORDS
+                        for a in args)
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, journal.resolve, fetch_ohlc)
+    except Exception:  # noqa: BLE001
+        log.warning("journal resolve failed", exc_info=True)
+    await update.message.reply_text(
+        journal.format_stats(symbol_key, mode if explicit_mode else None),
+        parse_mode=ParseMode.HTML)
+
+
+async def cmd_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not allowed(update):
+        return
+    symbol_key, _, _ = parse_args(ctx.args or [])
+    inst = I.BY_KEY[symbol_key]
+    loop = asyncio.get_running_loop()
+    text = await loop.run_in_executor(None, news.format_news, inst)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+ALERT_HELP = (
+    "<b>Alerts</b>\n\n"
+    "<code>/alert xauusd scalp</code> — tell me when gold sets up\n"
+    "<code>/alert</code> — what you are watching\n"
+    "<code>/alert off</code> — stop everything\n\n"
+    f"You get the full signal as soon as an ENTRY appears at "
+    f"{C.ALERT_MIN_CONFIDENCE}%+ confidence.\n\n"
+    "Polling mode watches continuously while this process is running, so "
+    "alerts need <code>scan_job.py</code> on a schedule (cron, systemd timer, "
+    "or the PythonAnywhere Tasks tab)."
+)
+
+
+async def cmd_alert(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not allowed(update):
+        return
+    args = list(ctx.args or [])
+    chat_id = update.effective_chat.id
+    words = [a.lower().lstrip("/") for a in args]
+
+    if any(w in ("off", "stop", "clear", "none") for w in words):
+        n = alerts.remove(chat_id)
+        await update.message.reply_text(
+            f"Cleared {n} alert{'s' if n != 1 else ''}." if n else "No alerts set.")
+        return
+    if not args:
+        await update.message.reply_text(alerts.format_list(chat_id),
+                                        parse_mode=ParseMode.HTML)
+        return
+
+    symbol_key, mode, bad = parse_args(args)
+    if bad:
+        await update.message.reply_text(f"Don't know '{bad}'. Try /symbols.")
+        return
+    inst = I.BY_KEY[symbol_key]
+    if alerts.add(chat_id, symbol_key, mode):
+        await update.message.reply_text(
+            f"🔔 Watching <b>{inst.display}</b> on <b>{mode}</b>.\n\n"
+            f"<i>Delivery needs the scan job running. /alerthelp explains.</i>",
+            parse_mode=ParseMode.HTML)
+    else:
+        await update.message.reply_text(f"Already watching {inst.display} {mode}.")
+
+
+async def cmd_alerthelp(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if allowed(update):
+        await update.message.reply_text(ALERT_HELP, parse_mode=ParseMode.HTML)
+
+
+async def cmd_crazymode(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not allowed(update):
+        return
+    _, mode, _ = parse_args(ctx.args or [])
+    keys = [k for k in C.SCAN_SYMBOLS if k in I.BY_KEY][:C.CRAZY_MAX_SYMBOLS]
+    msg = await update.message.reply_text(f"⚔️ Scanning {len(keys)} markets on {mode}…")
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, lambda: scanner.scan(keys, mode, fetch_ohlc, log=log.warning))
+        text = scanner.format_scan(result)
+        for res in scanner.tradeable(result["rows"]):
+            journal.record(res)
+    except Exception:  # noqa: BLE001
+        log.exception("crazymode failed")
+        text = "⚠️ Scan failed. Check the log."
+    await msg.edit_text(text, parse_mode=ParseMode.HTML)
+
+
+async def cmd_symbols(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not allowed(update):
+        return
+    out = "<b>Tradeable universe</b>\n"
+    for label, items in I.grouped().items():
+        if items:
+            out += f"\n<b>{label}</b>\n<code>" + " ".join(
+                i.display for i in items) + "</code>\n"
+    out += ("\n<i>Type any of them, or a nickname: gold, cable, nas100, aussie.</i>")
+    await update.message.reply_text(out, parse_mode=ParseMode.HTML)
+
+
 async def cmd_whoami(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f"Your Telegram user ID: {update.effective_user.id}")
 
@@ -364,6 +409,12 @@ def main() -> None:
     app.add_handler(CommandHandler("backtest", cmd_backtest))
     app.add_handler(CommandHandler("calibration", cmd_calibration))
     app.add_handler(CommandHandler("whoami", cmd_whoami))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("news", cmd_news))
+    app.add_handler(CommandHandler(["alert", "alerts"], cmd_alert))
+    app.add_handler(CommandHandler("alerthelp", cmd_alerthelp))
+    app.add_handler(CommandHandler(["crazymode", "scan"], cmd_crazymode))
+    app.add_handler(CommandHandler("symbols", cmd_symbols))
     app.add_handler(CallbackQueryHandler(on_button, pattern=r"^s\|"))
 
     log.info("Bot starting…")

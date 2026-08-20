@@ -93,26 +93,7 @@ async def analyse(symbol_key: str, mode: str) -> dict:
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not allowed(update):
         return
-    await update.message.reply_text(
-        "<b>Signal bot online.</b>\n\n"
-        "<code>/signal xauusd scalp</code>\n"
-        "<code>/signal xauusd intraday</code>\n"
-        "<code>/signal xauusd swing</code>\n\n"
-        "Short forms work too: <code>/signal scalp</code> defaults to gold.\n\n"
-        "You get one of three answers — <b>ENTRY</b>, <b>WAIT</b>, or <b>NO TRADE</b> — "
-        "with three percentages:\n"
-        "• <b>Confluence</b> — how many rules agree.\n"
-        "• <b>Confidence</b> — that score minus hazards the rules cannot see.\n"
-        "• <b>Probability</b> — odds the target trades before the stop.\n\n"
-        "<code>/backtest intraday</code> — proves whether the rules make money. "
-        "Run this before risking anything.\n"
-        "<code>/backtest intraday calibrate</code> — same run, but the measured "
-        "odds replace the model's guess in every later signal.\n"
-        "<code>/calibration</code> — is the probability measured or guessed?\n"
-        "<code>/strategy</code> — what the bot checks.\n\n"
-        "Read /strategy before you trust a single number in here.",
-        parse_mode=ParseMode.HTML,
-    )
+    await update.message.reply_text(view.HELP, parse_mode=ParseMode.HTML)
 
 
 async def cmd_strategy(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

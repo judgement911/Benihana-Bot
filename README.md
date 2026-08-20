@@ -20,6 +20,44 @@ the odds came from. 43 instruments across forex, metals, energy and indices.
 
 ---
 
+
+## Order types
+
+An **ENTRY** is executable at market — every condition passed on the last
+closed bar.
+
+A **WAIT** is a plan for a price the market is not at, so the signal names the
+order that gets you there and measures the stop and targets from *that* price
+rather than from wherever price sat when you asked:
+
+| Row shows | Meaning |
+| --- | --- |
+| `market` | Go now. |
+| `BUY LIMIT` / `SELL LIMIT` | Rests in the EMA20 pullback zone. Fills if price comes back. |
+| `BUY STOP` / `SELL STOP` | Sits beyond the last swing. Fills only if the turn confirms. |
+
+Which one you get is decided by where price is relative to the pullback zone,
+not by preference.
+
+## Stop distance
+
+The stop goes at the swing the trade is wrong beneath — but only inside the
+band the timeframe justifies:
+
+| Mode | Stop band |
+| --- | --- |
+| scalp | 0.8 – 1.6 × ATR |
+| intraday | 1.0 – 2.2 × ATR |
+| swing | 1.5 – 2.8 × ATR |
+
+Structure sitting further away than the ceiling gets capped, and Details says
+so. Before this was bounded a swing low 90 points away simply became a
+90-point stop on a gold swing trade.
+
+Tightening a stop is not free, and the odds now show it: dealing cost is
+charged as `spread ÷ stop distance`, so a stop half as wide costs twice as
+much in R and the expectancy drops accordingly.
+
 ## Read this first
 
 **The three numbers are not the same number.** Most bots print one figure and let you

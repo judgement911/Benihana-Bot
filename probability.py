@@ -170,17 +170,19 @@ def breakeven_rate(target_r: float, cost_r: Optional[float] = None) -> float:
 
 
 def model_probability(
-    score: float, target_r: float, room_rr: Optional[float] = None
+    score: float, target_r: float, room_rr: Optional[float] = None,
+    cost_r: Optional[float] = None,
 ) -> float:
     """Barrier odds shifted by the confluence score and by how much room the
     trade actually has before the next opposing swing."""
+    cost_r = C.COST_R if cost_r is None else cost_r
     edge = C.PROB_EDGE_GAIN * (float(score) - C.PROB_EDGE_PIVOT) / 100.0
 
     if room_rr is not None and target_r > 0 and room_rr < target_r:
         shortfall = _clamp(1.0 - float(room_rr) / float(target_r), 0.0, 1.0)
         edge -= C.PROB_ROOM_PENALTY * shortfall
 
-    p = _sigmoid(_logit(null_probability(target_r)) + edge)
+    p = _sigmoid(_logit(null_probability(target_r, cost_r)) + edge)
     return _clamp(p, C.PROB_FLOOR, C.PROB_CEIL)
 
 
@@ -237,6 +239,7 @@ def estimate(
     room_rr: Optional[float] = None,
     mode: str = "intraday",
     cal: Optional[dict] = None,
+    cost_r: Optional[float] = None,
 ) -> dict:
     """Probability that each target is reached before the stop, plus what that
     is worth in R.
@@ -246,12 +249,19 @@ def estimate(
     bucket says otherwise.
     """
     cal = load_calibration() if cal is None else cal
+    # Dealing cost as a share of the stop, supplied per-instrument by
+    # evaluate(). A tighter stop eats a bigger share of itself in spread,
+    # so the odds get worse instead of the tightening looking free.
+    cost_r = C.COST_R if cost_r is None else _clamp(float(cost_r), 0.0, 0.5)
+    # Dealing cost as a share of the stop. Supplied per-instrument by
+    # evaluate(); the config constant is only the fallback.
+    cost_r = C.COST_R if cost_r is None else _clamp(float(cost_r), 0.0, 0.5)
     targets_r = [float(t) for t in (targets_r or [1.0])]
 
     rows, prev = [], 1.0
     for i, k in enumerate(targets_r):
         field = "tp1" if i == 0 else "final" if i == len(targets_r) - 1 else None
-        p_model = model_probability(score, k, room_rr)
+        p_model = model_probability(score, k, room_rr, cost_r)
 
         if field:
             p, basis = _calibrate(p_model, mode, score, field, cal)
@@ -265,9 +275,9 @@ def estimate(
                 "r": k,
                 "p": round(p, 4),
                 "p_model": round(p_model, 4),
-                "p_null": round(null_probability(k), 4),
-                "breakeven": round(breakeven_rate(k), 4),
-                "edge": round(p - breakeven_rate(k), 4),
+                "p_null": round(null_probability(k, cost_r), 4),
+                "breakeven": round(breakeven_rate(k, cost_r), 4),
+                "edge": round(p - breakeven_rate(k, cost_r), 4),
                 "source": basis["source"],
                 "sample": basis["n"],
                 "bucket": basis["bucket"],
@@ -312,7 +322,7 @@ def estimate(
         "breakeven_first": rows[0]["breakeven"],
         "source": source,
         "sample": max(r["sample"] for r in rows),
-        "cost_r": C.COST_R,
+        "cost_r": round(cost_r, 4),
     }
 
 

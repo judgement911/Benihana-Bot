@@ -17,6 +17,10 @@ about a trade:
                  stop and both targets — four identical numbers.
   pip            what "one unit of movement" means, so risk reads as 12 pips
                  on cable and 6.34 pts on gold, the way a trader says it.
+  spread         typical retail dealing cost in price units. The probability
+                 model divides it by the stop distance to get the cost in R,
+                 so tightening a stop correctly makes the odds worse instead
+                 of looking free.
 
 Index and energy contract sizes vary by broker. The defaults here are the
 common retail CFD conventions; check yours before trusting the lot size.
@@ -48,6 +52,7 @@ class Instrument:
     contract_size: float
     digits: int
     pip: float
+    spread: float = 0.0      # typical retail spread, in price units
     tier: str = CORE
     aliases: tuple = field(default_factory=tuple)
 
@@ -65,6 +70,12 @@ class Instrument:
     def risk_units(self, price_distance: float) -> float:
         """Stop distance the way a trader says it: pips for FX, points else."""
         return abs(price_distance) / self.pip
+
+    def cost_r(self, stop_distance: float) -> float | None:
+        """Dealing cost as a fraction of the 1R stop. None when unknown."""
+        if not self.spread or stop_distance <= 0:
+            return None
+        return self.spread / float(stop_distance)
 
     def fmt_risk(self, price_distance: float) -> str:
         u = self.risk_units(price_distance)
@@ -101,23 +112,28 @@ class Instrument:
 
 def _fx(key: str, name: str, *aliases: str) -> Instrument:
     jpy = key.endswith("jpy")
+    pip = 0.01 if jpy else 0.0001
+    # Majors quote around a pip; crosses are routinely two to three.
+    major = key in ("eurusd", "gbpusd", "usdjpy", "usdchf",
+                    "usdcad", "audusd", "nzdusd")
     return Instrument(
         key=key, symbol=f"{key[:3].upper()}/{key[3:].upper()}", name=name,
         asset_class=FX, contract_size=100_000.0,
-        digits=3 if jpy else 5, pip=0.01 if jpy else 0.0001,
+        digits=3 if jpy else 5, pip=pip,
+        spread=pip * (1.2 if major else 2.5),
         tier=CORE, aliases=aliases,
     )
 
 
 _ALL: list[Instrument] = [
     # ---------------------------------------------------------------- metals
-    Instrument("xauusd", "XAU/USD", "Gold", METAL, 100.0, 2, 1.0, CORE,
+    Instrument("xauusd", "XAU/USD", "Gold", METAL, 100.0, 2, 1.0, 0.30, CORE,
                ("gold", "xau")),
-    Instrument("xagusd", "XAG/USD", "Silver", METAL, 5_000.0, 3, 0.01, CORE,
+    Instrument("xagusd", "XAG/USD", "Silver", METAL, 5_000.0, 3, 0.01, 0.02, CORE,
                ("silver", "xag")),
-    Instrument("xptusd", "XPT/USD", "Platinum", METAL, 100.0, 2, 1.0, EXTENDED,
+    Instrument("xptusd", "XPT/USD", "Platinum", METAL, 100.0, 2, 1.0, 1.20, EXTENDED,
                ("platinum", "xpt")),
-    Instrument("xpdusd", "XPD/USD", "Palladium", METAL, 100.0, 2, 1.0, EXTENDED,
+    Instrument("xpdusd", "XPD/USD", "Palladium", METAL, 100.0, 2, 1.0, 2.00, EXTENDED,
                ("palladium", "xpd")),
 
     # ------------------------------------------------------------ fx majors
@@ -154,28 +170,28 @@ _ALL: list[Instrument] = [
 
     # ---------------------------------------------------------------- energy
     Instrument("usoil", "WTI/USD", "WTI Crude", ENERGY, 1_000.0, 2, 0.01,
-               EXTENDED, ("wti", "oil", "crude", "usoil", "wtiusd")),
+               0.03, EXTENDED, ("wti", "oil", "crude", "usoil", "wtiusd")),
     Instrument("ukoil", "BRENT/USD", "Brent Crude", ENERGY, 1_000.0, 2, 0.01,
-               EXTENDED, ("brent", "ukoil", "brentusd")),
+               0.03, EXTENDED, ("brent", "ukoil", "brentusd")),
     Instrument("ngas", "NG/USD", "Natural Gas", ENERGY, 10_000.0, 3, 0.001,
-               EXTENDED, ("natgas", "gas", "naturalgas")),
+               0.005, EXTENDED, ("natgas", "gas", "naturalgas")),
 
     # --------------------------------------------------------------- indices
-    Instrument("us30", "DJI", "Dow Jones 30", INDEX, 1.0, 1, 1.0, EXTENDED,
+    Instrument("us30", "DJI", "Dow Jones 30", INDEX, 1.0, 1, 1.0, 2.0, EXTENDED,
                ("dow", "dji", "dowjones", "wallstreet")),
-    Instrument("us500", "SPX", "S&P 500", INDEX, 1.0, 1, 1.0, EXTENDED,
+    Instrument("us500", "SPX", "S&P 500", INDEX, 1.0, 1, 1.0, 0.5, EXTENDED,
                ("sp500", "spx", "spx500", "sandp")),
-    Instrument("ustec", "NDX", "Nasdaq 100", INDEX, 1.0, 1, 1.0, EXTENDED,
+    Instrument("ustec", "NDX", "Nasdaq 100", INDEX, 1.0, 1, 1.0, 1.5, EXTENDED,
                ("nas100", "nasdaq", "ndx", "nq", "us100")),
-    Instrument("ger40", "DAX", "DAX 40", INDEX, 1.0, 1, 1.0, EXTENDED,
+    Instrument("ger40", "DAX", "DAX 40", INDEX, 1.0, 1, 1.0, 1.0, EXTENDED,
                ("dax", "de40", "ger30", "germany40")),
-    Instrument("uk100", "FTSE", "FTSE 100", INDEX, 1.0, 1, 1.0, EXTENDED,
+    Instrument("uk100", "FTSE", "FTSE 100", INDEX, 1.0, 1, 1.0, 1.0, EXTENDED,
                ("ftse", "footsie", "uk")),
-    Instrument("jp225", "N225", "Nikkei 225", INDEX, 1.0, 1, 1.0, EXTENDED,
+    Instrument("jp225", "N225", "Nikkei 225", INDEX, 1.0, 1, 1.0, 8.0, EXTENDED,
                ("nikkei", "n225", "japan225")),
-    Instrument("fra40", "CAC", "CAC 40", INDEX, 1.0, 1, 1.0, EXTENDED,
+    Instrument("fra40", "CAC", "CAC 40", INDEX, 1.0, 1, 1.0, 1.0, EXTENDED,
                ("cac", "cac40", "france40")),
-    Instrument("aus200", "ASX", "ASX 200", INDEX, 1.0, 1, 1.0, EXTENDED,
+    Instrument("aus200", "ASX", "ASX 200", INDEX, 1.0, 1, 1.0, 1.0, EXTENDED,
                ("asx", "asx200", "australia200")),
 ]
 

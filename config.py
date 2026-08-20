@@ -66,7 +66,8 @@ class ModeSpec:
     bias_tf: str         # where the veto lives
     sessions_utc: tuple  # ((start_hour, start_min, end_hour, end_min), ...)
     min_rr: float        # below this, an ENTRY is downgraded to WAIT
-    atr_sl_mult: float   # stop buffer beyond structure, in ATR
+    atr_sl_mult: float   # stop floor, in ATR: never tighter than this
+    max_sl_mult: float   # stop ceiling, in ATR: never wider than this
     tp_multiples: tuple  # take-profit levels in R
     bars: int            # history to request per timeframe
 
@@ -77,19 +78,34 @@ MODES = {
     "scalp": ModeSpec(
         "scalp", "5min", "15min", "1h",
         ((7, 0, 11, 0), (12, 30, 16, 30)),
-        min_rr=1.3, atr_sl_mult=1.0, tp_multiples=(1.0, 2.0), bars=300,
+        min_rr=1.3, atr_sl_mult=0.8, max_sl_mult=1.6,
+        tp_multiples=(1.0, 2.0), bars=300,
     ),
     "intraday": ModeSpec(
         "intraday", "15min", "1h", "4h",
         ((6, 0, 20, 0),),
-        min_rr=1.5, atr_sl_mult=1.3, tp_multiples=(1.0, 2.0), bars=300,
+        min_rr=1.5, atr_sl_mult=1.0, max_sl_mult=2.2,
+        tp_multiples=(1.0, 2.0), bars=300,
     ),
     "swing": ModeSpec(
         "swing", "4h", "1day", "1week",
         ((0, 0, 23, 59),),
-        min_rr=1.8, atr_sl_mult=1.8, tp_multiples=(1.0, 2.5), bars=300,
+        min_rr=1.8, atr_sl_mult=1.5, max_sl_mult=2.8,
+        tp_multiples=(1.0, 2.5), bars=300,
     ),
 }
+
+# -------------------------------------------------------------- stop sizing
+# The stop used to be "whichever is further: the ATR floor, or the last swing
+# beyond it". Nothing bounded the second half, so a swing low 90 points away
+# became a 90-point stop on gold. Structure still places the stop, but only
+# inside a band the mode's volatility justifies: never tighter than
+# atr_sl_mult x ATR, never wider than max_sl_mult x ATR.
+#
+# Tightening a stop is not free. It raises the share of the stop eaten by the
+# spread, which the probability model now charges for, and it puts the stop
+# closer to ordinary noise. These are deliberately not tiny.
+SL_STRUCT_BUFFER = float(_get("SL_STRUCT_BUFFER", "0.35"))   # ATR beyond the swing
 
 # ---------------------------------------------------------------- thresholds
 ENTRY_MIN_SCORE = 70      # >= this AND a trigger present -> ENTRY

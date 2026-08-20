@@ -366,6 +366,82 @@ def check_views() -> bool:
     return ok
 
 
+def check_orders() -> bool:
+    """The stop must stay inside its mode's band, and a pending order must sit
+    on the correct side of price — a BUY LIMIT above the market is not an
+    order, it is a typo that fills instantly."""
+    import instruments as I
+    rule = {"5min": "5min", "15min": "15min", "1h": "1h", "4h": "4h",
+            "1day": "1D", "1week": "1W"}
+    problems, kinds, n = [], set(), 0
+
+    for price_level, inst in ((4500.0, I.BY_KEY["xauusd"]),
+                              (1.0850, I.BY_KEY["eurusd"])):
+        base = synth(kind="uptrend", n=6000)
+        base = base / base["close"].iloc[0] * price_level
+        for mode in C.MODES:
+            spec = C.MODES[mode]
+            e = base if spec.entry_tf == "15min" else resample_ohlc(base, rule[spec.entry_tf])
+            t = resample_ohlc(base, rule[spec.trend_tf])
+            b = resample_ohlc(base, rule[spec.bias_tf])
+            if len(e) < 400 or len(b) < 40:
+                continue
+            for i in range(400, len(e), 29):
+                now = e.index[i]
+                res = evaluate(e.iloc[:i + 1], t[t.index <= now], b[b.index <= now],
+                               spec, now.to_pydatetime(), instrument=inst)
+                lv, order = res.get("levels"), res.get("order")
+                if not lv or not order:
+                    continue
+                n += 1
+                kinds.add(order["kind"])
+                tag = f"{inst.display}/{mode}"
+
+                if lv["stop_atr"] is not None and lv["stop_atr"] > spec.max_sl_mult + 0.02:
+                    problems.append(f"{tag}: stop {lv['stop_atr']}x ATR over ceiling "
+                                    f"{spec.max_sl_mult}")
+                if lv["stop_atr"] is not None and lv["stop_atr"] < spec.atr_sl_mult - 0.02:
+                    problems.append(f"{tag}: stop {lv['stop_atr']}x ATR under floor "
+                                    f"{spec.atr_sl_mult}")
+
+                entry, stop, long = lv["entry"], lv["stop"], res["direction"] == 1
+                if long and not stop < entry:
+                    problems.append(f"{tag}: long stop {stop} not below entry {entry}")
+                if (not long) and not stop > entry:
+                    problems.append(f"{tag}: short stop {stop} not above entry {entry}")
+                for tp, m in zip(lv["tps"], lv["tp_multiples"]):
+                    if long and not tp > entry:
+                        problems.append(f"{tag}: long TP {tp} not above entry {entry}")
+                    if (not long) and not tp < entry:
+                        problems.append(f"{tag}: short TP {tp} not below entry {entry}")
+
+                # the pending order has to be reachable in the right direction
+                px = order["price"]
+                if order["kind"] == "limit" and long and px > res["price"] + 1e-9:
+                    problems.append(f"{tag}: buy limit {px} above market {res['price']}")
+                if order["kind"] == "limit" and not long and px < res["price"] - 1e-9:
+                    problems.append(f"{tag}: sell limit {px} below market {res['price']}")
+                if order["kind"] == "stop" and long and px < res["price"] - 1e-9:
+                    problems.append(f"{tag}: buy stop {px} below market {res['price']}")
+                if order["kind"] == "stop" and not long and px > res["price"] + 1e-9:
+                    problems.append(f"{tag}: sell stop {px} above market {res['price']}")
+                if order["kind"] == "market" and res["decision"] != "ENTRY":
+                    problems.append(f"{tag}: market order on a {res['decision']}")
+                if abs(px - entry) > 10 ** -inst.digits:
+                    problems.append(f"{tag}: levels anchored at {entry}, order at {px}")
+
+    if problems:
+        for p in problems[:6]:
+            print(f"  orders: {p}")
+        return False
+    missing = {"market", "limit", "stop"} - kinds
+    if missing:
+        print(f"  orders: never produced {sorted(missing)} — untested paths")
+        return False
+    print(f"  orders: {n} plans, stops inside band, every order on the right side")
+    return True
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -395,6 +471,7 @@ if __name__ == "__main__":
 
     print("\nUniverse, sizing and presentation:")
     ok &= check_instruments() & check_sizing() & check_views()
+    ok &= check_orders()
 
     print("\nSignal journal:")
     ok &= check_journal()

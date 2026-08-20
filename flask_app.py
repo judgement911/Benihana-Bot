@@ -164,26 +164,7 @@ def parse_args(parts: list[str], default_symbol: str = "xauusd",
     return symbol_key, mode, unknown
 
 
-HELP = (
-    "<b>Signal bot online.</b>\n\n"
-    "<code>/signal xauusd scalp</code>\n"
-    "<code>/signal xauusd intraday</code>\n"
-    "<code>/signal xauusd swing</code>\n\n"
-    "<code>/backtest intraday</code> — does the strategy actually make money?\n"
-    "<code>/backtest intraday calibrate</code> — same run, and the measured odds "
-    "replace the model's guess from then on\n"
-    "<code>/crazymode</code> — scan every market at once\n"
-    "<code>/stats xauusd</code> — what the bot has actually delivered\n"
-    "<code>/alert xauusd scalp</code> — ping me when a setup appears\n"
-    "<code>/news xauusd</code> — the economic calendar that matters here\n"
-    "<code>/symbols</code> — everything it can trade\n"
-    "<code>/calibration</code> — is the probability measured or guessed?\n"
-    "<code>/strategy</code> — what the bot checks\n\n"
-    "Answers are <b>ENTRY</b>, <b>WAIT</b>, or <b>NO TRADE</b> with three "
-    "percentages: <b>confluence</b> (how many rules agree), <b>confidence</b> "
-    "(that score minus hazards the rules cannot see) and <b>probability</b> "
-    "(odds the target trades before the stop)."
-)
+HELP = view.HELP
 
 STRATEGY = (
     "<b>What the bot checks</b>\n\n"
@@ -208,6 +189,15 @@ STRATEGY = (
     "the way. Backtest results override the model once you run "
     "/backtest intraday calibrate. Check /calibration to see which one you are "
     "reading.\n\n"
+    "<b>The stop</b>: placed at the swing the trade is wrong beneath, but only "
+    "inside the band the timeframe justifies — scalp 0.8-1.6x ATR, intraday "
+    "1.0-2.2x, swing 1.5-2.8x. Structure further away than that gets capped, "
+    "and the signal says so.\n\n"
+    "<b>The order</b>: an ENTRY is executable at market. A WAIT is a plan for "
+    "a price we are not at, so it quotes the order that gets you there — a "
+    "LIMIT resting in the pullback zone, or a STOP beyond the last swing that "
+    "fills only if the turn confirms. Stop and targets are measured from that "
+    "order price, not from wherever price happens to be when you asked.\n\n"
     "Nobody has verified these rules are profitable. Run /backtest first."
 )
 

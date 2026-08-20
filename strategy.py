@@ -12,7 +12,11 @@ Nothing is scored until every hard gate passes. If a gate fails the answer is
 NO TRADE regardless of how pretty the rest of the chart looks — that is the
 whole point of a gate.
 
-The percentage returned is RULE AGREEMENT, not probability of profit.
+Three numbers come back and they are not interchangeable. The SCORE is rule
+agreement. CONFIDENCE is that score after the hazards a scorecard cannot see —
+news hours, dead sessions, no room to the next swing. PROBABILITY is the odds
+of the target trading before the stop, from barrier maths plus whatever the
+backtest has actually measured. See probability.py.
 """
 from __future__ import annotations
 
@@ -23,6 +27,7 @@ import pandas as pd
 
 import config as C
 import indicators as ind
+import probability as prob
 
 LONG, SHORT, FLAT = 1, -1, 0
 DIR_NAME = {LONG: "BUY", SHORT: "SELL", FLAT: "NONE"}
@@ -177,6 +182,10 @@ def evaluate(
         "vetoes": [],
         "missing": [],
         "levels": None,
+        # A hard veto never gets scored, so it never gets probabilities either.
+        # Zero confidence is the honest answer, not a missing key.
+        "confidence": {"value": 0, "from_score": 0, "adjustments": [], "drag": 0},
+        "probability": None,
     }
 
     trend_dir = _direction_from_emas(t)
@@ -430,7 +439,33 @@ def evaluate(
     else:
         out["decision"] = "NO TRADE"
 
-    if now_utc.hour in C.NEWS_WARNING_HOURS_UTC:
+    news_hour = now_utc.hour in C.NEWS_WARNING_HOURS_UTC
+    if news_hour:
         out["news_warning"] = True
+
+    # ------------------------------------------------- CONFIDENCE + PROBABILITY
+    # The scorecard measures agreement between indicators. These two measure
+    # something the indicators cannot: how much the surrounding conditions
+    # should discount that agreement, and what the resulting trade is worth.
+    flags = {
+        "outside_session": not in_sess,
+        "news_hour": news_hour,
+        "short_history": b["ema_slow_n"] < 200,
+        "no_room": room_rr is not None and room_rr < spec.min_rr,
+        "half_trigger": not (rsi_fired and macd_fired),
+        "weak_structure": struct_pts < 10,
+        "odd_volatility": not (0.7 <= e["atr_ratio"] <= 1.8),
+        "ageing_data": age > tf_seconds * 1.5,
+        "weak_candle": candle_pts < 6,
+    }
+    out["confidence"] = prob.confidence(
+        out["score"], flags, clean_sweep=all(r["ok"] for r in reasons)
+    )
+    out["probability"] = prob.estimate(
+        score=out["score"],
+        targets_r=spec.tp_multiples,
+        room_rr=room_rr,
+        mode=spec.name,
+    )
 
     return out

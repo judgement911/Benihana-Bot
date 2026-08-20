@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 import config as C
+import probability as prob
 from indicators import resample_ohlc
 from strategy import evaluate
 
@@ -94,6 +95,120 @@ def show_one():
     print("no ENTRY found in sample")
 
 
+def check_probability_model():
+    """The probability number has to obey a few laws or it is worse than
+    useless. Assert them rather than eyeball them."""
+    failures = []
+
+    def want(cond, msg):
+        if not cond:
+            failures.append(msg)
+
+    # A driftless market hits +kR before -1R exactly 1/(1+k) of the time, and
+    # that is also the breakeven win rate. Costs push them apart, one each way.
+    want(abs(prob.null_probability(1.0, 0.0) - 0.5) < 1e-9, "1R null should be 50%")
+    want(abs(prob.null_probability(2.0, 0.0) - 1 / 3) < 1e-9, "2R null should be 33%")
+    want(prob.null_probability(1.0) < prob.breakeven_rate(1.0),
+         "costs must make the target harder AND the bar higher")
+
+    # Monotone in the score, and never wilder than the caps allow.
+    prev = 0.0
+    for s in range(0, 101, 5):
+        p = prob.model_probability(s, 1.0)
+        want(p >= prev - 1e-12, f"probability fell as score rose at {s}")
+        want(C.PROB_FLOOR - 1e-9 <= p <= C.PROB_CEIL + 1e-9, f"{p} out of bounds at {s}")
+        prev = p
+
+    # Farther targets are strictly harder, always.
+    for s in (40, 70, 100):
+        e = prob.estimate(s, (1.0, 2.0, 3.0), cal={})
+        ps = [t["p"] for t in e["targets"]]
+        want(ps == sorted(ps, reverse=True), f"targets not monotone at score {s}: {ps}")
+
+    # Swings sitting inside the target have to cost something.
+    open_room = prob.model_probability(80, 2.0, room_rr=5.0)
+    blocked = prob.model_probability(80, 2.0, room_rr=0.5)
+    want(blocked < open_room, "an obstacle inside the target changed nothing")
+
+    # A perfect score must not buy a fantasy. 12-ish points over the null.
+    lift = prob.model_probability(100, 1.0) - prob.null_probability(1.0)
+    want(0.0 < lift < 0.20, f"edge term is out of hand: +{lift:.1%}")
+
+    # Calibration: a thin sample nudges, a thick one dominates.
+    thin = {"modes": {"intraday": {"trades": 10, "tp1": 0.90, "final": 0.80,
+                                   "buckets": {}}}}
+    thick = {"modes": {"intraday": {"trades": 4000, "tp1": 0.90, "final": 0.80,
+                                    "buckets": {}}}}
+    base = prob.estimate(75, (1.0, 2.0), mode="intraday", cal={})["p_first"]
+    p_thin = prob.estimate(75, (1.0, 2.0), mode="intraday", cal=thin)["p_first"]
+    p_thick = prob.estimate(75, (1.0, 2.0), mode="intraday", cal=thick)["p_first"]
+    want(base < p_thin < p_thick, f"shrinkage misordered: {base:.3f} {p_thin:.3f} {p_thick:.3f}")
+    want(p_thick <= C.PROB_CEIL + 1e-9, "calibration escaped the ceiling")
+
+    # Samples below the minimum are ignored outright.
+    tiny = {"modes": {"intraday": {"trades": 2, "tp1": 0.9, "final": 0.9,
+                                   "buckets": {}}}}
+    want(prob.estimate(75, (1.0, 2.0), mode="intraday", cal=tiny)["source"] == "model",
+         "a 2-trade sample was allowed to speak")
+
+    # Confidence: penalties bite, bonus lifts, result stays in range.
+    clean = prob.confidence(80, {}, clean_sweep=True)["value"]
+    hurt = prob.confidence(80, {k: True for k in C.CONFIDENCE_PENALTIES})["value"]
+    want(clean == 86, f"clean sweep should be 86, got {clean}")
+    want(5 <= hurt < 80, f"stacked penalties should bite: {hurt}")
+    want(prob.confidence(2, {})["value"] >= 5, "confidence went below the floor")
+    want(prob.confidence(100, {}, clean_sweep=True)["value"] <= 99,
+         "confidence hit 100 — no read is that good")
+
+    for msg in failures:
+        print(f"  FAIL {msg}")
+    print(f"  probability model: {'all checks passed' if not failures else str(len(failures)) + ' FAILURES'}")
+    return not failures
+
+
+def check_signal_fields(mode: str = "intraday"):
+    """Every non-vetoed evaluation must carry both numbers, and a vetoed one
+    must say zero rather than nothing."""
+    spec = C.MODES[mode]
+    df = synth(kind="uptrend")
+    trend = resample_ohlc(df, "1h")
+    bias = resample_ohlc(df, "4h")
+
+    seen = {"scored": 0, "vetoed": 0}
+    failures = []
+
+    for i in range(400, len(df), 17):
+        now = df.index[i]
+        res = evaluate(df.iloc[: i + 1], trend[trend.index <= now],
+                       bias[bias.index <= now], spec, now.to_pydatetime())
+        conf = res["confidence"]
+        if res["vetoes"]:
+            seen["vetoed"] += 1
+            if conf["value"] != 0 or res["probability"] is not None:
+                failures.append(f"veto at {now} quoted odds anyway")
+            continue
+
+        seen["scored"] += 1
+        pr = res["probability"]
+        if pr is None:
+            failures.append(f"no probability at {now}")
+            continue
+        if not 0 <= conf["value"] <= 99:
+            failures.append(f"confidence {conf['value']} out of range at {now}")
+        if len(pr["targets"]) != len(spec.tp_multiples):
+            failures.append(f"target count mismatch at {now}")
+        if conf["value"] > res["score"] + C.CONFIDENCE_CLEAN_SWEEP_BONUS:
+            failures.append(f"confidence exceeded score+bonus at {now}")
+        if not prob.read_block(res):
+            failures.append(f"empty read block at {now}")
+
+    for msg in failures[:5]:
+        print(f"  FAIL {msg}")
+    print(f"  signal fields: {seen['scored']} scored, {seen['vetoed']} vetoed, "
+          f"{'all present' if not failures else str(len(failures)) + ' FAILURES'}")
+    return not failures
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -113,4 +228,11 @@ if __name__ == "__main__":
             print(f"  {m:<9} skipped (synthetic history too short for {spec.bias_tf})")
             continue
         res = evaluate(e, t, b, spec, datetime.now(timezone.utc))
-        print(f"  {m:<9} -> {res['decision']:<9} score {res['score']}")
+        pr = res["probability"]
+        odds = f"P(TP1) {pr['p_first']:.0%}" if pr else "no odds (vetoed)"
+        print(f"  {m:<9} -> {res['decision']:<9} score {res['score']:<4} "
+              f"confidence {res['confidence']['value']:<4} {odds}")
+
+    print("\nConfidence and probability:")
+    ok = check_probability_model() & check_signal_fields()
+    raise SystemExit(0 if ok else 1)

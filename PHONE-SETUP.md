@@ -94,12 +94,29 @@ In Telegram:
 ```
 /backtest intraday
 ```
-Takes 1–4 minutes and replies with win rate, expectancy in R, max drawdown, and a
-confidence-bucket table. Read it before you place a single trade.
+Takes 1–4 minutes and replies with win rate, expectancy in R, max drawdown, the score
+bucket table, and a grade on the probability model itself. Read it before you place a
+single trade.
 
 - **Total R negative?** The strategy loses. Don't trade it.
-- **Expectancy not rising down the bucket table?** Ignore the percentage; treat ENTRY
-  as a plain yes/no.
+- **Expectancy not falling as you read down the bucket table?** Ignore the percentage;
+  treat ENTRY as a plain yes/no.
+- **"model is N pts too optimistic"?** The probability in your signals is overselling.
+  Fix it by calibrating.
+
+Until you calibrate, every probability in a signal is a model estimate and says so. To
+fix that without touching a laptop:
+
+```
+/backtest intraday calibrate
+```
+
+Same run, but it saves the measured hit rates. Every signal afterwards quotes those
+instead of the model's guess, and `/calibration` shows the sample behind them. Repeat
+per mode.
+
+One catch on Render: the free tier's disk is wiped on every redeploy, so re-run the
+calibrate command after you push code.
 
 ### Editing code later, still phone-only
 GitHub → open the file → pencil icon → edit → commit. Render redeploys by itself.

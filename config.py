@@ -126,3 +126,65 @@ WEIGHTS = {
 # High-impact releases that routinely gap gold. The bot cannot see the calendar
 # on the free tier, so it warns you by clock instead. All times UTC.
 NEWS_WARNING_HOURS_UTC = {12, 13, 14, 18}  # NFP/CPI 12:30, FOMC 18:00
+
+# ------------------------------------------------------ the three percentages
+# The signal prints three numbers and they mean three different things. Keep
+# them straight or the whole thing is decoration:
+#
+#   Confluence  — the 100-point scorecard above. Rule agreement, nothing more.
+#   Confidence  — conviction in THIS read: the confluence score adjusted for
+#                 hazards the scorecard cannot see (news hour, dead session,
+#                 truncated history, no room to the next swing).
+#   Probability — P(target is reached before the stop), from barrier maths plus
+#                 a score-driven edge term, then corrected by real backtest
+#                 results when calibration.json exists.
+
+# Spread + commission expressed as a fraction of the 1R stop distance. Gold on
+# a retail account is commonly 20-30 cents of spread; against a 3-dollar stop
+# that is ~0.08R. Measure yours and set it — it moves the odds more than any
+# indicator setting here.
+COST_R = float(_get("COST_R", "0.05"))
+
+# Edge term. logit(p) gets PROB_EDGE_GAIN * (score - PROB_EDGE_PIVOT) / 100
+# added to it. At the pivot the model assumes the strategy has NO edge and the
+# odds are pure barrier maths. Gain 1.2 means a perfect 100 score buys about
+# +12 percentage points on a 1R target — deliberately modest, because nobody
+# has proven this strategy beats a coin flip yet.
+PROB_EDGE_GAIN = float(_get("PROB_EDGE_GAIN", "1.2"))
+PROB_EDGE_PIVOT = float(_get("PROB_EDGE_PIVOT", "60"))
+
+# Log-odds removed when the target sits beyond the next opposing swing. Price
+# has to chew through that level to pay you.
+PROB_ROOM_PENALTY = float(_get("PROB_ROOM_PENALTY", "0.8"))
+
+# Hard limits on anything printed as a probability. A bot quoting 95% is lying.
+PROB_FLOOR = 0.05
+PROB_CEIL = 0.85
+
+# ---------------------------------------------------------------- calibration
+# Written by:  python backtest.py --mode intraday --csv FILE --calibrate
+CALIBRATION_FILE = _get("CALIBRATION_FILE") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "calibration.json"
+)
+
+# Empirical-Bayes shrinkage: how many "pseudo-trades" of model prior a real
+# backtest sample has to outvote. 25 means a 25-trade bucket is weighted 50/50
+# against the model. Lower it only if you have thousands of trades.
+CALIBRATION_PRIOR_WEIGHT = float(_get("CALIBRATION_PRIOR_WEIGHT", "25"))
+CALIBRATION_MIN_TRADES = int(_get("CALIBRATION_MIN_TRADES", "8"))
+
+# ----------------------------------------------------------------- confidence
+# Points knocked off the confluence score for hazards the scorecard misses.
+# These stack; the result is clamped to 5-99.
+CONFIDENCE_PENALTIES = {
+    "outside_session": 8,   # liquidity is thin, spreads are wide
+    "news_hour": 6,         # a release can erase the whole technical picture
+    "short_history": 6,     # bias EMA degraded because history was too short
+    "no_room": 8,           # nearest opposing swing is inside the target
+    "half_trigger": 5,      # only one of RSI / MACD turned
+    "weak_structure": 5,    # swing structure not fully intact
+    "odd_volatility": 5,    # ATR outside the 0.7-1.8x comfort band
+    "ageing_data": 4,       # last candle older than 1.5 bars
+    "weak_candle": 6,       # confirming candle unremarkable or absent
+}
+CONFIDENCE_CLEAN_SWEEP_BONUS = 6   # every scorecard line passed

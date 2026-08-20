@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import html
 import logging
+import re
+import time
 import traceback
 from datetime import datetime, timezone
 
@@ -19,6 +21,7 @@ import requests
 from flask import Flask, jsonify, request
 
 import config as C
+import probability as prob
 from strategy import DIR_NAME, evaluate
 from market_data import DataError, fetch_ohlc
 
@@ -32,6 +35,15 @@ API = "https://api.telegram.org/bot{token}/{method}"
 # Telegram re-sends an update if we're slow to answer. Without this you'd get
 # the same signal twice.
 _seen_updates: set[int] = set()
+
+# ...but marking an update seen BEFORE handling it is how a chat gets stuck on
+# "⏳ Reading…" forever: PythonAnywhere kills a request that outruns its limits,
+# the reply is never sent, Telegram retries, and the retry is thrown away as a
+# duplicate. So an update in flight is tracked separately and expires. A retry
+# that arrives after the worker died gets to run; a genuine double-delivery
+# while we are still working does not.
+_inflight: dict[int, float] = {}
+INFLIGHT_TTL = 90.0        # seconds; Telegram gives up long before this
 
 
 # --------------------------------------------------------------------------- #
@@ -84,6 +96,35 @@ def edit(chat_id: int, message_id: int, text: str,
     return tg("editMessageText", **payload)
 
 
+def _ok(resp) -> bool:
+    return bool(resp and resp.get("ok"))
+
+
+def deliver(chat_id: int, message_id: int | None, text: str,
+            symbol_key: str = "xauusd") -> None:
+    """Get `text` in front of the user, whatever it takes.
+
+    Editing the placeholder is the nice outcome. If Telegram refuses — a stray
+    angle bracket in a provider's error message is enough to fail HTML parsing
+    — retry without markup, then as a fresh message. Anything is better than
+    leaving the chat on "Reading…" with the reason buried in a log file.
+    """
+    if message_id and _ok(edit(chat_id, message_id, text, True, symbol_key)):
+        return
+
+    plain = re.sub(r"<[^>]+>", "", text)
+    if message_id:
+        log.error("edit failed, retrying without HTML")
+        if _ok(tg("editMessageText", chat_id=chat_id, message_id=message_id,
+                  text=plain, disable_web_page_preview=True)):
+            return
+
+    if _ok(send(chat_id, text, buttons=True, symbol_key=symbol_key)):
+        return
+    log.error("send failed too, falling back to plain text")
+    tg("sendMessage", chat_id=chat_id, text=plain)
+
+
 def allowed(user_id: int) -> bool:
     return (not C.ALLOWED_USER_IDS) or (user_id in C.ALLOWED_USER_IDS)
 
@@ -106,11 +147,6 @@ def parse_args(parts: list[str]) -> tuple[str, str]:
     return symbol_key, mode
 
 
-def bar(pct: int, width: int = 14) -> str:
-    filled = round(pct / 100 * width)
-    return "█" * filled + "░" * (width - filled)
-
-
 def render(symbol: str, res: dict) -> str:
     out = f"<b>{symbol} · {res['mode'].upper()}</b>\n"
     out += f"<code>{res['price']:,.2f}</code> · candle closed "
@@ -119,7 +155,9 @@ def render(symbol: str, res: dict) -> str:
     out += f"<i>{tfs['entry']} trigger / {tfs['trend']} trend / {tfs['bias']} bias</i>\n\n"
 
     if res["vetoes"]:
-        out += "🚫 <b>NO TRADE</b>\n<i>Hard filter blocked this — no score calculated.</i>\n\n"
+        out += "🚫 <b>NO TRADE</b>\n"
+        out += "Confidence <b>0%</b> · no probability quoted\n"
+        out += "<i>Hard filter blocked this — no score calculated.</i>\n\n"
         for v in res["vetoes"]:
             out += f"• {html.escape(v)}\n"
         return out
@@ -130,8 +168,15 @@ def render(symbol: str, res: dict) -> str:
     if dec == "ENTRY":
         out += f" — {DIR_NAME[res['direction']]}"
     out += "</b>\n"
-    out += f"Confluence <b>{res['score']}%</b>  <code>{bar(res['score'])}</code>\n"
-    out += "<i>rule agreement, not win probability</i>\n\n"
+    out += f"<pre>{html.escape(prob.read_block(res))}</pre>\n"
+
+    drags = prob.drag_note(res)
+    if drags:
+        out += f"<i>{html.escape(drags)}</i>\n"
+    basis = prob.basis_note(res)
+    if basis:
+        out += f"<i>Odds: {html.escape(basis)}</i>\n"
+    out += "\n"
 
     lv = res["levels"]
     if dec == "ENTRY" and lv:
@@ -170,10 +215,15 @@ HELP = (
     "<code>/signal xauusd intraday</code>\n"
     "<code>/signal xauusd swing</code>\n\n"
     "<code>/backtest intraday</code> — does the strategy actually make money?\n"
+    "<code>/backtest intraday calibrate</code> — same run, and the measured odds "
+    "replace the model's guess from then on\n"
+    "<code>/calibration</code> — is the probability measured or guessed?\n"
     "<code>/strategy</code> — what the bot checks\n"
     "<code>/whoami</code> — your Telegram ID\n\n"
-    "Answers are <b>ENTRY</b>, <b>WAIT</b>, or <b>NO TRADE</b> with a confluence "
-    "score. That score is rule agreement, <i>not</i> a probability of winning."
+    "Answers are <b>ENTRY</b>, <b>WAIT</b>, or <b>NO TRADE</b> with three "
+    "percentages: <b>confluence</b> (how many rules agree), <b>confidence</b> "
+    "(that score minus hazards the rules cannot see) and <b>probability</b> "
+    "(odds the target trades before the stop)."
 )
 
 STRATEGY = (
@@ -186,8 +236,19 @@ STRATEGY = (
     "<b>Hard vetoes</b> (NO TRADE, no score):\n"
     "ADX under 15 · timeframe conflict · ATR over 2.5x or under 0.4x normal · "
     "RSI already extreme · stale data\n\n"
-    "<b>Score</b>: 8 weighted conditions totalling 100. 70+ with a real trigger "
-    "= ENTRY. 50–69 = WAIT. Under 50 = NO TRADE.\n\n"
+    "<b>Confluence</b>: 8 weighted conditions totalling 100. 70+ with a real "
+    "trigger = ENTRY. 50–69 = WAIT. Under 50 = NO TRADE. Rule agreement, "
+    "nothing more.\n\n"
+    "<b>Confidence</b>: that score minus what the scorecard cannot see — news "
+    "hours, dead sessions, short bias history, no room to the next swing. The "
+    "signal lists every deduction.\n\n"
+    "<b>Probability</b>: odds the target trades before the stop. Barrier maths "
+    "first — a 1R stop against a kR target pays 1/(1+k) of the time in a "
+    "driftless market, which is also your breakeven win rate — then a capped "
+    "edge for the confluence score, minus costs and minus any swing sitting in "
+    "the way. Backtest results override the model once you run "
+    "/backtest intraday calibrate. Check /calibration to see which one you are "
+    "reading.\n\n"
     "Nobody has verified these rules are profitable. Run /backtest first."
 )
 
@@ -212,26 +273,35 @@ def do_signal(chat_id: int, symbol_key: str, mode: str, message_id: int | None =
         log.error("signal failed: %s", traceback.format_exc())
         text = f"⚠️ Error: <code>{html.escape(type(exc).__name__)}</code>"
 
-    if message_id:
-        edit(chat_id, message_id, text, buttons=True, symbol_key=symbol_key)
-    else:
-        send(chat_id, text, buttons=True, symbol_key=symbol_key)
+    deliver(chat_id, message_id, text, symbol_key)
 
 
-def do_backtest(chat_id: int, symbol_key: str, mode: str):
+def do_backtest(chat_id: int, symbol_key: str, mode: str, calibrate: bool = False):
     symbol = C.SYMBOL_ALIASES.get(symbol_key, "XAU/USD")
     spec = C.MODES[mode]
 
     send(chat_id, f"⏱ Backtesting {symbol} {mode}. Takes about a minute.")
     try:
+        from backtest import build_calibration, write_calibration
         from backtest import run as backtest_run
 
         # Deliberately modest: a free PythonAnywhere account gets 100 CPU-seconds
         # a day, and this is the only thing here that eats a real share of them.
         df = fetch_ohlc(symbol, spec.entry_tf, 1200)
-        _, report = backtest_run(df, mode)
+        stats, report = backtest_run(df, mode)
         text = (f"<b>{symbol} {mode} backtest</b>\n{len(df)} × {spec.entry_tf} bars\n"
                 f"<pre>{html.escape(report)}</pre>")
+
+        if calibrate:
+            trades = stats.get("trade_log") or []
+            if len(trades) < C.CALIBRATION_MIN_TRADES:
+                text += (f"\nNot calibrated: {len(trades)} trades is under the "
+                         f"{C.CALIBRATION_MIN_TRADES}-trade minimum.")
+            else:
+                entry = build_calibration(trades, mode, symbol, len(df), "telegram")
+                write_calibration(entry, mode, symbol)
+                text += (f"\n✅ Calibrated {mode} on {len(trades)} trades. Signals "
+                         f"now quote measured odds — see /calibration.")
     except DataError as exc:
         text = f"⚠️ <b>Data problem</b>\n{html.escape(str(exc))}"
     except Exception as exc:  # noqa: BLE001
@@ -239,6 +309,11 @@ def do_backtest(chat_id: int, symbol_key: str, mode: str):
         text = f"⚠️ Backtest error: <code>{html.escape(type(exc).__name__)}</code>"
 
     send(chat_id, text)
+
+
+def do_calibration(chat_id: int):
+    send(chat_id, "<b>Probability calibration</b>\n"
+                  f"<pre>{html.escape(prob.calibration_report())}</pre>")
 
 
 def handle_message(msg: dict):
@@ -269,8 +344,11 @@ def handle_message(msg: dict):
         symbol_key, mode = parse_args(args)
         do_signal(chat_id, symbol_key, mode)
     elif cmd == "/backtest":
+        calibrate = any(a.lower().lstrip("-") == "calibrate" for a in args)
         symbol_key, mode = parse_args(args)
-        do_backtest(chat_id, symbol_key, mode)
+        do_backtest(chat_id, symbol_key, mode, calibrate)
+    elif cmd == "/calibration":
+        do_calibration(chat_id)
     else:
         send(chat_id, "Unknown command. Try /help")
 
@@ -306,12 +384,14 @@ def webhook(secret: str):
     update = request.get_json(force=True, silent=True) or {}
     update_id = update.get("update_id")
 
-    if update_id in _seen_updates:
-        return jsonify(ok=True)          # Telegram retry; already handled
     if update_id is not None:
-        _seen_updates.add(update_id)
-        if len(_seen_updates) > 500:
-            _seen_updates.clear()
+        now = time.time()
+        for stale in [k for k, ts in _inflight.items() if now - ts > INFLIGHT_TTL]:
+            _inflight.pop(stale, None)   # the worker that owned it is gone
+
+        if update_id in _seen_updates or update_id in _inflight:
+            return jsonify(ok=True)      # genuine duplicate; already answered
+        _inflight[update_id] = now
 
     try:
         if "message" in update:
@@ -320,6 +400,12 @@ def webhook(secret: str):
             handle_callback(update["callback_query"])
     except Exception:  # noqa: BLE001
         log.error("update handling failed: %s", traceback.format_exc())
+    finally:
+        if update_id is not None:
+            _inflight.pop(update_id, None)
+            _seen_updates.add(update_id)
+            if len(_seen_updates) > 500:
+                _seen_updates.clear()
 
     return jsonify(ok=True)
 

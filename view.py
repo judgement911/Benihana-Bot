@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import html
 
+import instruments as I
 import probability as prob
 from strategy import DIR_NAME
 
@@ -39,8 +40,12 @@ SHORT_LABEL = {
 DIR_ICON = {"BUY": "🟢", "SELL": "🔴"}
 
 
-def _p(x: float) -> str:
-    return f"{x:,.2f}"
+def _inst(res: dict) -> "I.Instrument":
+    return I.BY_KEY.get(res.get("instrument") or "", I.GOLD)
+
+
+def _p(x: float, inst: "I.Instrument" = None) -> str:
+    return (inst or I.GOLD).fmt(x)
 
 
 def _e(s) -> str:
@@ -56,7 +61,7 @@ def _subhead(res: dict, with_price: bool) -> str:
     otherwise the Entry row already says it."""
     bits = [res["mode"].upper(), res["timeframes"]["entry"]]
     if with_price:
-        bits.append(_p(res["price"]))
+        bits.append(_p(res["price"], _inst(res)))
     bits.append(res["as_of"].strftime("%H:%M UTC"))
     return " · ".join(bits)
 
@@ -64,12 +69,16 @@ def _subhead(res: dict, with_price: bool) -> str:
 def _levels_block(res: dict, live: bool) -> str:
     """The part people actually came for."""
     lv = res["levels"]
+    inst = _inst(res)
     rows = [("Entry", lv["entry"], "market" if live else "price now"),
-            ("Stop Loss", lv["stop"], f"{lv['risk_points']} pts")]
+            ("Stop Loss", lv["stop"],
+             lv.get("risk_display") or f"{lv['risk_points']} pts")]
     for n, (tp, m) in enumerate(zip(lv["tps"], lv["tp_multiples"]), start=1):
         rows.append((f"TP {n}", tp, f"{m:g}R"))
     width = max(len(r[0]) for r in rows)
-    return "\n".join(f"{name:<{width}}  {_p(val):>10}  {note}" for name, val, note in rows)
+    money = max(len(_p(v, inst)) for _, v, _ in rows)
+    return "\n".join(f"{name:<{width}}  {_p(val, inst):>{money}}  {note}"
+                      for name, val, note in rows)
 
 
 def _headline_numbers(res: dict) -> str:
@@ -119,8 +128,13 @@ def _compact(symbol: str, res: dict) -> str:
     if has_plan:
         out += f"<pre>{_e(_levels_block(res, live=dec == 'ENTRY'))}</pre>\n"
         rr = max(lv["tp_multiples"])
-        out += (f"<b>{lv['lots']} lots</b> · {_cash(lv['risk_cash'])} risk "
-                f"· 1:{rr:g} R:R\n")
+        if lv.get("lots") is None:
+            # A cross pays out in a currency we have no USD rate for. The R
+            # multiples still hold; only the lot size is unknowable here.
+            out += f"<i>Size it yourself — {_e(_inst(res).quote)} payout</i> · 1:{rr:g} R:R\n"
+        else:
+            out += (f"<b>{lv['lots']} lots</b> · {_cash(lv['risk_cash'])} risk "
+                    f"· 1:{rr:g} R:R\n")
 
     nums = _headline_numbers(res)
     if nums:
@@ -146,7 +160,7 @@ def _verbose(symbol: str, res: dict) -> str:
     mode = res["mode"].upper()
     tfs = res["timeframes"]
     out = f"<b>{_e(symbol)} · {_e(mode)}</b>\n"
-    out += f"<code>{_p(res['price'])}</code> · candle closed "
+    out += f"<code>{_p(res['price'], _inst(res))}</code> · candle closed "
     out += f"{res['as_of'].strftime('%H:%M')} UTC\n"
     out += (f"<i>{_e(tfs['entry'])} trigger / {_e(tfs['trend'])} trend / "
             f"{_e(tfs['bias'])} bias</i>\n\n")
@@ -181,7 +195,9 @@ def _verbose(symbol: str, res: dict) -> str:
     if lv and dec in ("ENTRY", "WAIT"):
         out += ("<b>Trade plan</b>\n" if dec == "ENTRY" else "<b>Provisional plan</b>\n")
         out += f"<pre>{_e(_levels_block(res, live=dec == 'ENTRY'))}\n"
-        out += f"{'Size':<9}  {lv['lots']:>10} lots = {_cash(lv['risk_cash'])}\n"
+        size = (f"{lv['lots']:>10} lots = {_cash(lv['risk_cash'])}" if lv.get("lots") is not None
+                else f"{'—':>10} (cross pair, size it yourself)")
+        out += f"{'Size':<9}  {size}\n"
         out += f"{'ATR':<9}  {lv['atr']:>10} pts</pre>\n"
         if dec == "WAIT":
             out += ("<i>Not a live trade. These levels are recomputed from the "
@@ -189,8 +205,8 @@ def _verbose(symbol: str, res: dict) -> str:
                     "setup actually triggers.</i>\n")
         out += "\n"
     elif lv:
-        out += (f"<i>If it triggers, stop would sit near {_p(lv['stop'])}, "
-                f"{lv['risk_points']} pts away.</i>\n\n")
+        out += (f"<i>If it triggers, stop would sit near {_p(lv['stop'], _inst(res))}, "
+                f"{lv.get('risk_display') or lv['risk_points']} away.</i>\n\n")
 
     out += "<b>Scorecard</b>\n"
     for r in res["reasons"]:

@@ -27,6 +27,7 @@ import pandas as pd
 
 import config as C
 import indicators as ind
+import instruments as I
 import probability as prob
 
 LONG, SHORT, FLAT = 1, -1, 0
@@ -158,8 +159,13 @@ def evaluate(
     now_utc: Optional[datetime] = None,
     balance: float = None,
     risk_pct: float = None,
+    instrument: "I.Instrument" = None,
 ) -> dict:
     now_utc = now_utc or datetime.now(timezone.utc)
+    # Sizing and rounding are per-instrument: a forex lot is 100,000 base
+    # units against gold's 100 ounces, and EUR/USD needs five decimals where
+    # gold needs two. Defaulting to gold keeps every older call site correct.
+    inst = instrument or I.GOLD
     balance = C.ACCOUNT_BALANCE if balance is None else balance
     risk_pct = C.RISK_PCT if risk_pct is None else risk_pct
 
@@ -172,6 +178,8 @@ def evaluate(
 
     out = {
         "mode": spec.name,
+        "instrument": inst.key,
+        "symbol": inst.symbol,
         "price": price,
         "as_of": e["time"],
         "timeframes": {"entry": spec.entry_tf, "trend": spec.trend_tf, "bias": spec.bias_tf},
@@ -401,19 +409,37 @@ def evaluate(
         room_rr = abs(opposing - price) / risk_per_unit
 
     risk_cash = balance * risk_pct / 100.0
-    lots = risk_cash / (risk_per_unit * C.CONTRACT_SIZE) if risk_per_unit > 0 else 0.0
+    d = inst.digits
 
+    # Size from the levels as PRINTED, not the unrounded ones. Subtracting the
+    # stop from the entry on screen has to give you the risk on screen, and the
+    # lot size has to match that same number.
+    entry_r, stop_r = round(float(price), d), round(float(sl), d)
+    risk_shown = abs(entry_r - stop_r)
+
+    # Risk per lot lands in the quote currency; convert before dividing, or a
+    # 23,600-yen stop on USD/JPY reads as a 23,600-dollar stop and the size
+    # collapses to zero.
+    usd_per_quote = inst.usd_per_quote(entry_r)
+    lots = None
+    if risk_shown > 0 and usd_per_quote:
+        risk_per_lot_usd = risk_shown * inst.contract_size * usd_per_quote
+        if risk_per_lot_usd > 0:
+            lots = risk_cash / risk_per_lot_usd
     out["levels"] = {
-        "entry": round(float(price), 2),
-        "stop": round(float(sl), 2),
-        "risk_points": round(float(risk_per_unit), 2),
-        "tps": [round(float(x), 2) for x in tps],
+        "entry": entry_r,
+        "stop": stop_r,
+        "risk_points": round(risk_shown, d),
+        "risk_display": inst.fmt_risk(risk_shown),
+        "tps": [round(float(x), d) for x in tps],
         "tp_multiples": spec.tp_multiples,
         "room_rr": round(float(room_rr), 2) if room_rr else None,
-        "next_obstacle": round(float(opposing), 2) if opposing else None,
-        "lots": round(float(lots), 2),
+        "next_obstacle": round(float(opposing), d) if opposing else None,
+        # Small sizes need more than two decimals or a 0.074-lot gold trade
+        # prints as 0.07 and quietly risks 5% less than you asked for.
+        "lots": None if lots is None else round(float(lots), 2 if lots >= 1 else 3),
         "risk_cash": round(float(risk_cash), 2),
-        "atr": round(float(atr_e), 2),
+        "atr": round(float(atr_e), d),
     }
 
     # ---------------------------------------------------------------- DECISION

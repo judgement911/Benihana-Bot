@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import html
 import logging
+import re
+import time
 import traceback
 from datetime import datetime, timezone
 
@@ -33,6 +35,15 @@ API = "https://api.telegram.org/bot{token}/{method}"
 # Telegram re-sends an update if we're slow to answer. Without this you'd get
 # the same signal twice.
 _seen_updates: set[int] = set()
+
+# ...but marking an update seen BEFORE handling it is how a chat gets stuck on
+# "⏳ Reading…" forever: PythonAnywhere kills a request that outruns its limits,
+# the reply is never sent, Telegram retries, and the retry is thrown away as a
+# duplicate. So an update in flight is tracked separately and expires. A retry
+# that arrives after the worker died gets to run; a genuine double-delivery
+# while we are still working does not.
+_inflight: dict[int, float] = {}
+INFLIGHT_TTL = 90.0        # seconds; Telegram gives up long before this
 
 
 # --------------------------------------------------------------------------- #
@@ -83,6 +94,35 @@ def edit(chat_id: int, message_id: int, text: str,
             ]]
         }
     return tg("editMessageText", **payload)
+
+
+def _ok(resp) -> bool:
+    return bool(resp and resp.get("ok"))
+
+
+def deliver(chat_id: int, message_id: int | None, text: str,
+            symbol_key: str = "xauusd") -> None:
+    """Get `text` in front of the user, whatever it takes.
+
+    Editing the placeholder is the nice outcome. If Telegram refuses — a stray
+    angle bracket in a provider's error message is enough to fail HTML parsing
+    — retry without markup, then as a fresh message. Anything is better than
+    leaving the chat on "Reading…" with the reason buried in a log file.
+    """
+    if message_id and _ok(edit(chat_id, message_id, text, True, symbol_key)):
+        return
+
+    plain = re.sub(r"<[^>]+>", "", text)
+    if message_id:
+        log.error("edit failed, retrying without HTML")
+        if _ok(tg("editMessageText", chat_id=chat_id, message_id=message_id,
+                  text=plain, disable_web_page_preview=True)):
+            return
+
+    if _ok(send(chat_id, text, buttons=True, symbol_key=symbol_key)):
+        return
+    log.error("send failed too, falling back to plain text")
+    tg("sendMessage", chat_id=chat_id, text=plain)
 
 
 def allowed(user_id: int) -> bool:
@@ -233,10 +273,7 @@ def do_signal(chat_id: int, symbol_key: str, mode: str, message_id: int | None =
         log.error("signal failed: %s", traceback.format_exc())
         text = f"⚠️ Error: <code>{html.escape(type(exc).__name__)}</code>"
 
-    if message_id:
-        edit(chat_id, message_id, text, buttons=True, symbol_key=symbol_key)
-    else:
-        send(chat_id, text, buttons=True, symbol_key=symbol_key)
+    deliver(chat_id, message_id, text, symbol_key)
 
 
 def do_backtest(chat_id: int, symbol_key: str, mode: str, calibrate: bool = False):
@@ -347,12 +384,14 @@ def webhook(secret: str):
     update = request.get_json(force=True, silent=True) or {}
     update_id = update.get("update_id")
 
-    if update_id in _seen_updates:
-        return jsonify(ok=True)          # Telegram retry; already handled
     if update_id is not None:
-        _seen_updates.add(update_id)
-        if len(_seen_updates) > 500:
-            _seen_updates.clear()
+        now = time.time()
+        for stale in [k for k, ts in _inflight.items() if now - ts > INFLIGHT_TTL]:
+            _inflight.pop(stale, None)   # the worker that owned it is gone
+
+        if update_id in _seen_updates or update_id in _inflight:
+            return jsonify(ok=True)      # genuine duplicate; already answered
+        _inflight[update_id] = now
 
     try:
         if "message" in update:
@@ -361,6 +400,12 @@ def webhook(secret: str):
             handle_callback(update["callback_query"])
     except Exception:  # noqa: BLE001
         log.error("update handling failed: %s", traceback.format_exc())
+    finally:
+        if update_id is not None:
+            _inflight.pop(update_id, None)
+            _seen_updates.add(update_id)
+            if len(_seen_updates) > 500:
+                _seen_updates.clear()
 
     return jsonify(ok=True)
 

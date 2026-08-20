@@ -22,7 +22,8 @@ from flask import Flask, jsonify, request
 
 import config as C
 import probability as prob
-from strategy import DIR_NAME, evaluate
+import view
+from strategy import evaluate
 from market_data import DataError, fetch_ohlc
 
 logging.basicConfig(level=logging.INFO)
@@ -67,32 +68,29 @@ def tg(method: str, **payload):
         return None
 
 
-def send(chat_id: int, text: str, buttons: bool = False, symbol_key: str = "xauusd"):
+def _markup(symbol_key: str, mode: str, verbose: bool) -> dict:
+    return {"inline_keyboard": [
+        [{"text": lbl, "callback_data": cb} for lbl, cb in row]
+        for row in view.buttons(symbol_key, mode, verbose)
+    ]}
+
+
+def send(chat_id: int, text: str, buttons: bool = False, symbol_key: str = "xauusd",
+         mode: str = "intraday", verbose: bool = False):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
                "disable_web_page_preview": True}
     if buttons:
-        payload["reply_markup"] = {
-            "inline_keyboard": [[
-                {"text": "Scalp", "callback_data": f"s|{symbol_key}|scalp"},
-                {"text": "Intraday", "callback_data": f"s|{symbol_key}|intraday"},
-                {"text": "Swing", "callback_data": f"s|{symbol_key}|swing"},
-            ]]
-        }
+        payload["reply_markup"] = _markup(symbol_key, mode, verbose)
     return tg("sendMessage", **payload)
 
 
 def edit(chat_id: int, message_id: int, text: str,
-         buttons: bool = False, symbol_key: str = "xauusd"):
+         buttons: bool = False, symbol_key: str = "xauusd",
+         mode: str = "intraday", verbose: bool = False):
     payload = {"chat_id": chat_id, "message_id": message_id, "text": text,
                "parse_mode": "HTML", "disable_web_page_preview": True}
     if buttons:
-        payload["reply_markup"] = {
-            "inline_keyboard": [[
-                {"text": "Scalp", "callback_data": f"s|{symbol_key}|scalp"},
-                {"text": "Intraday", "callback_data": f"s|{symbol_key}|intraday"},
-                {"text": "Swing", "callback_data": f"s|{symbol_key}|swing"},
-            ]]
-        }
+        payload["reply_markup"] = _markup(symbol_key, mode, verbose)
     return tg("editMessageText", **payload)
 
 
@@ -101,7 +99,8 @@ def _ok(resp) -> bool:
 
 
 def deliver(chat_id: int, message_id: int | None, text: str,
-            symbol_key: str = "xauusd") -> None:
+            symbol_key: str = "xauusd", mode: str = "intraday",
+            verbose: bool = False) -> None:
     """Get `text` in front of the user, whatever it takes.
 
     Editing the placeholder is the nice outcome. If Telegram refuses — a stray
@@ -109,7 +108,8 @@ def deliver(chat_id: int, message_id: int | None, text: str,
     — retry without markup, then as a fresh message. Anything is better than
     leaving the chat on "Reading…" with the reason buried in a log file.
     """
-    if message_id and _ok(edit(chat_id, message_id, text, True, symbol_key)):
+    if message_id and _ok(edit(chat_id, message_id, text, True, symbol_key,
+                           mode, verbose)):
         return
 
     plain = re.sub(r"<[^>]+>", "", text)
@@ -119,7 +119,8 @@ def deliver(chat_id: int, message_id: int | None, text: str,
                   text=plain, disable_web_page_preview=True)):
             return
 
-    if _ok(send(chat_id, text, buttons=True, symbol_key=symbol_key)):
+    if _ok(send(chat_id, text, buttons=True, symbol_key=symbol_key,
+            mode=mode, verbose=verbose)):
         return
     log.error("send failed too, falling back to plain text")
     tg("sendMessage", chat_id=chat_id, text=plain)
@@ -147,80 +148,6 @@ def parse_args(parts: list[str]) -> tuple[str, str]:
     return symbol_key, mode
 
 
-def render(symbol: str, res: dict) -> str:
-    out = f"<b>{symbol} · {res['mode'].upper()}</b>\n"
-    out += f"<code>{res['price']:,.2f}</code> · candle closed "
-    out += f"{res['as_of'].strftime('%H:%M')} UTC\n"
-    tfs = res["timeframes"]
-    out += f"<i>{tfs['entry']} trigger / {tfs['trend']} trend / {tfs['bias']} bias</i>\n\n"
-
-    if res["vetoes"]:
-        out += "🚫 <b>NO TRADE</b>\n"
-        out += "Confidence <b>0%</b> · no probability quoted\n"
-        out += "<i>Hard filter blocked this — no score calculated.</i>\n\n"
-        for v in res["vetoes"]:
-            out += f"• {html.escape(v)}\n"
-        return out
-
-    dec = res["decision"]
-    icon = {"ENTRY": "✅", "WAIT": "⏳", "NO TRADE": "🚫"}[dec]
-    out += f"{icon} <b>{dec}"
-    if dec == "ENTRY":
-        out += f" — {DIR_NAME[res['direction']]}"
-    elif dec == "WAIT" and res["direction"]:
-        # A WAIT already knows which way it leans. Hiding that made the reply
-        # look like it had no opinion at all.
-        out += f" — {DIR_NAME[res['direction']]} setup"
-    out += "</b>\n"
-    out += f"<pre>{html.escape(prob.read_block(res))}</pre>\n"
-
-    drags = prob.drag_note(res)
-    if drags:
-        out += f"<i>{html.escape(drags)}</i>\n"
-    basis = prob.basis_note(res)
-    if basis:
-        out += f"<i>Odds: {html.escape(basis)}</i>\n"
-    out += "\n"
-
-    lv = res["levels"]
-    if lv and dec in ("ENTRY", "WAIT"):
-        out += ("<b>Trade plan</b>\n" if dec == "ENTRY"
-                else "<b>Provisional plan</b>\n")
-        out += "<pre>"
-        out += (f"Entry  {lv['entry']:,.2f}  (market)\n" if dec == "ENTRY"
-                else f"Entry  {lv['entry']:,.2f}  (price now)\n")
-        out += f"Stop   {lv['stop']:,.2f}  ({lv['risk_points']} pts)\n"
-        for n, (tp, m) in enumerate(zip(lv["tps"], lv["tp_multiples"]), start=1):
-            out += f"TP{n}    {tp:,.2f}  ({m}R)\n"
-        out += f"Size   {lv['lots']} lots = ${lv['risk_cash']}\n"
-        out += f"ATR    {lv['atr']} pts</pre>\n"
-        if dec == "WAIT":
-            out += ("<i>Not a live trade. These levels are recomputed from the "
-                    "current price every time you ask, so they move until the "
-                    "setup actually triggers.</i>\n")
-        out += "\n"
-    elif lv:
-        out += f"<i>If it triggers, stop would sit near {lv['stop']:,.2f}.</i>\n\n"
-
-    out += "<b>Scorecard</b>\n"
-    for r in res["reasons"]:
-        out += f"{'✓' if r['ok'] else '✗'} {html.escape(r['text'])} "
-        out += f"<code>[{r['points']:.0f}/{r['max']}]</code>\n"
-
-    if dec != "ENTRY" and res["missing"]:
-        out += "\n<b>Waiting on</b>\n"
-        for m in res["missing"][:4]:
-            out += f"• {html.escape(m)}\n"
-
-    if res.get("news_warning"):
-        out += "\n⚠️ <i>High-impact US data often lands this hour.</i>\n"
-
-    return out
-
-
-# --------------------------------------------------------------------------- #
-#  Commands
-# --------------------------------------------------------------------------- #
 HELP = (
     "<b>Signal bot online.</b>\n\n"
     "<code>/signal xauusd scalp</code>\n"
@@ -265,7 +192,8 @@ STRATEGY = (
 )
 
 
-def do_signal(chat_id: int, symbol_key: str, mode: str, message_id: int | None = None):
+def do_signal(chat_id: int, symbol_key: str, mode: str,
+              message_id: int | None = None, verbose: bool = False):
     symbol = C.SYMBOL_ALIASES.get(symbol_key, "XAU/USD")
     spec = C.MODES[mode]
 
@@ -278,14 +206,14 @@ def do_signal(chat_id: int, symbol_key: str, mode: str, message_id: int | None =
         trend_df = fetch_ohlc(symbol, spec.trend_tf, spec.bars)
         bias_df = fetch_ohlc(symbol, spec.bias_tf, spec.bars)
         res = evaluate(entry_df, trend_df, bias_df, spec, datetime.now(timezone.utc))
-        text = render(symbol, res)
+        text = view.render(symbol, res, verbose)
     except DataError as exc:
         text = f"⚠️ <b>Data problem</b>\n{html.escape(str(exc))}"
     except Exception as exc:  # noqa: BLE001
         log.error("signal failed: %s", traceback.format_exc())
         text = f"⚠️ Error: <code>{html.escape(type(exc).__name__)}</code>"
 
-    deliver(chat_id, message_id, text, symbol_key)
+    deliver(chat_id, message_id, text, symbol_key, mode, verbose)
 
 
 def do_backtest(chat_id: int, symbol_key: str, mode: str, calibrate: bool = False):
@@ -372,12 +300,15 @@ def handle_callback(cb: dict):
         return
 
     try:
-        _, symbol_key, mode = cb["data"].split("|")
+        parts = cb["data"].split("|")
+        _, symbol_key, mode = parts[:3]
+        verbose = len(parts) > 3 and parts[3] == "v"
     except ValueError:
         return
 
     msg = cb.get("message", {})
-    do_signal(msg["chat"]["id"], symbol_key, mode, message_id=msg.get("message_id"))
+    do_signal(msg["chat"]["id"], symbol_key, mode,
+              message_id=msg.get("message_id"), verbose=verbose)
 
 
 # --------------------------------------------------------------------------- #

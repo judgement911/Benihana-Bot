@@ -21,7 +21,8 @@ import probability as prob
 from backtest import build_calibration, write_calibration
 from backtest import run as backtest_run
 from data import DataError, fetch_ohlc
-from strategy import DIR_NAME, evaluate
+import view
+from strategy import evaluate
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s — %(message)s", level=logging.INFO
@@ -64,99 +65,6 @@ def parse_args(args: list[str]) -> tuple[str, str, str | None]:
             )
 
     return C.SYMBOL_ALIASES[symbol_key], mode, None
-
-
-def fmt_price(x: float) -> str:
-    return f"{x:,.2f}"
-
-
-def render(symbol: str, res: dict) -> str:
-    mode = res["mode"].upper()
-    head = f"<b>{symbol} · {mode}</b>\n"
-    head += f"<code>{fmt_price(res['price'])}</code> · candle closed "
-    head += f"{res['as_of'].strftime('%H:%M')} UTC\n"
-    tfs = res["timeframes"]
-    head += f"<i>{tfs['entry']} trigger / {tfs['trend']} trend / {tfs['bias']} bias</i>\n\n"
-
-    dec = res["decision"]
-
-    # --- vetoed outright -------------------------------------------------- #
-    if res["vetoes"]:
-        body = "🚫 <b>NO TRADE</b>\n"
-        body += "Confidence <b>0%</b> · no probability quoted\n"
-        body += "<i>Hard filter blocked this — score not even calculated.</i>\n\n"
-        for v in res["vetoes"]:
-            body += f"• {v}\n"
-        return head + body
-
-    icon = {"ENTRY": "✅", "WAIT": "⏳", "NO TRADE": "🚫"}[dec]
-    body = f"{icon} <b>{dec}"
-    if dec == "ENTRY":
-        body += f" — {DIR_NAME[res['direction']]}"
-    elif dec == "WAIT" and res["direction"]:
-        # A WAIT already knows which way it leans. Hiding that made the reply
-        # look like it had no opinion at all.
-        body += f" — {DIR_NAME[res['direction']]} setup"
-    body += "</b>\n"
-    body += f"<pre>{html.escape(prob.read_block(res))}</pre>\n"
-
-    drags = prob.drag_note(res)
-    if drags:
-        body += f"<i>{html.escape(drags)}</i>\n"
-    basis = prob.basis_note(res)
-    if basis:
-        body += f"<i>Odds: {html.escape(basis)}</i>\n"
-    body += "\n"
-
-    lv = res["levels"]
-    if lv and dec in ("ENTRY", "WAIT"):
-        body += ("<b>Trade plan</b>\n" if dec == "ENTRY"
-                 else "<b>Provisional plan</b>\n")
-        body += "<pre>"
-        body += (f"Entry  {fmt_price(lv['entry'])}  (market)\n" if dec == "ENTRY"
-                 else f"Entry  {fmt_price(lv['entry'])}  (price now)\n")
-        body += f"Stop   {fmt_price(lv['stop'])}  ({lv['risk_points']} pts risk)\n"
-        for n, (tp, m) in enumerate(zip(lv["tps"], lv["tp_multiples"]), start=1):
-            body += f"TP{n}    {fmt_price(tp)}  ({m}R)\n"
-        body += f"Size   {lv['lots']} lots = ${lv['risk_cash']} risk\n"
-        body += f"ATR    {lv['atr']} pts</pre>\n"
-        if dec == "WAIT":
-            body += ("<i>Not a live trade. These levels are recomputed from the "
-                     "current price every time you ask, so they move until the "
-                     "setup actually triggers.</i>\n")
-        body += "\n"
-    elif lv:
-        body += (
-            f"<i>If it does trigger: stop would sit near {fmt_price(lv['stop'])}, "
-            f"{lv['risk_points']} pts away.</i>\n\n"
-        )
-
-    body += "<b>Scorecard</b>\n"
-    for r in res["reasons"]:
-        mark = "✓" if r["ok"] else "✗"
-        body += f"{mark} {r['text']} <code>[{r['points']:.0f}/{r['max']}]</code>\n"
-
-    if dec != "ENTRY" and res["missing"]:
-        body += "\n<b>Waiting on</b>\n"
-        for m in res["missing"][:4]:
-            body += f"• {m}\n"
-
-    if res.get("news_warning"):
-        body += "\n⚠️ <i>High-impact US data often lands this hour. Check the calendar.</i>\n"
-
-    return head + body
-
-
-def keyboard(symbol_key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("Scalp", callback_data=f"s|{symbol_key}|scalp"),
-                InlineKeyboardButton("Intraday", callback_data=f"s|{symbol_key}|intraday"),
-                InlineKeyboardButton("Swing", callback_data=f"s|{symbol_key}|swing"),
-            ]
-        ]
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -237,14 +145,22 @@ async def cmd_strategy(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def do_signal(symbol: str, mode: str, send, edit=None) -> None:
+def keyboard(symbol_key: str, mode: str, verbose: bool = False) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(lbl, callback_data=cb) for lbl, cb in row]
+        for row in view.buttons(symbol_key, mode, verbose)
+    ])
+
+
+async def do_signal(symbol: str, mode: str, send, edit=None,
+                    verbose: bool = False) -> None:
     # render() used to sit in an else: clause, which is NOT covered by the
     # except handlers above it. Any error formatting the reply escaped, the
     # placeholder was never edited, and the chat sat on "Reading…" forever.
     # Rendering belongs inside the try.
     try:
         res = await analyse(symbol, mode)
-        text = render(symbol, res)
+        text = view.render(symbol, res, verbose)
     except DataError as exc:
         text = f"⚠️ <b>Data problem</b>\n{html.escape(str(exc))}"
     except Exception as exc:  # noqa: BLE001
@@ -258,12 +174,12 @@ async def do_signal(symbol: str, mode: str, send, edit=None) -> None:
     # bracket in an error string is enough — resend as plain text rather than
     # leaving the placeholder stranded.
     try:
-        await deliver(text, parse_mode=ParseMode.HTML, reply_markup=keyboard(key))
+        await deliver(text, parse_mode=ParseMode.HTML, reply_markup=keyboard(key, mode, verbose))
     except Exception:  # noqa: BLE001
         log.exception("HTML delivery failed, falling back to plain text")
         stripped = re.sub(r"<[^>]+>", "", text)
         try:
-            await deliver(stripped, reply_markup=keyboard(key))
+            await deliver(stripped, reply_markup=keyboard(key, mode, verbose))
         except Exception:  # noqa: BLE001
             log.exception("plain-text delivery failed too")
 
@@ -289,9 +205,11 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not allowed(update):
         return
 
-    _, symbol_key, mode = q.data.split("|")
+    parts = q.data.split("|")
+    _, symbol_key, mode = parts[:3]
+    verbose = len(parts) > 3 and parts[3] == "v"
     symbol = C.SYMBOL_ALIASES.get(symbol_key, "XAU/USD")
-    await do_signal(symbol, mode, q.message.reply_text, q.edit_message_text)
+    await do_signal(symbol, mode, q.message.reply_text, q.edit_message_text, verbose)
 
 
 def save_calibration(stats: dict, mode: str, symbol: str, bars: int) -> str:

@@ -4,12 +4,15 @@ Market data with swappable providers.
 Yahoo blocks PythonAnywhere's shared IPs (permanent 429), so this replaces it.
 Both providers below are on PythonAnywhere's free-account allowlist.
 
-  binance  — PAXG/USDT, a token redeemable for physical gold. No signup, no key,
-             trades 24/7. Tracks spot gold closely but not exactly.
-  oanda    — XAU_USD straight from a real forex broker. Needs a free practice
-             account and API token, but the prices are true spot gold.
+  twelvedata — true XAU/USD spot. Free key from twelvedata.com (800 calls/day).
+               The default, because it works from PythonAnywhere and needs no
+               broker account.
+  oanda      — XAU_USD from a real forex broker. Free practice account + token.
+               Best match to what your broker actually quotes.
+  binance    — PAXG/USDT gold token, no key needed. NOTE: Binance geo-blocks
+               PythonAnywhere (HTTP 451), so this only works elsewhere.
 
-Pick one in pa_config.py:   DATA_PROVIDER = "binance"   (or "oanda")
+Pick one in pa_config.py:   DATA_PROVIDER = "twelvedata"
 
 Both expose native 5m/15m/1h/4h/1d/1w candles, so nothing is resampled.
 """
@@ -154,17 +157,73 @@ def _fetch_oanda(symbol: str, tf: str, bars: int) -> pd.DataFrame:
     return df.sort_index()
 
 
-PROVIDERS = {"binance": _fetch_binance, "oanda": _fetch_oanda}
+# --------------------------------------------------------------------------- #
+#  Twelve Data — true XAU/USD, free key
+# --------------------------------------------------------------------------- #
+TD_URL = "https://api.twelvedata.com/time_series"
+
+TD_TF = {"5min": "5min", "15min": "15min", "30min": "30min", "1h": "1h",
+         "4h": "4h", "1day": "1day", "1week": "1week"}
+
+
+def _fetch_twelvedata(symbol: str, tf: str, bars: int) -> pd.DataFrame:
+    key = getattr(C, "TWELVEDATA_API_KEY", "")
+    if not key:
+        raise DataError("TWELVEDATA_API_KEY missing from pa_config.py. "
+                        "Get a free one at twelvedata.com.")
+    if tf not in TD_TF:
+        raise DataError(f"Unsupported timeframe {tf}.")
+
+    resp = _get(TD_URL, params={
+        "symbol": symbol, "interval": TD_TF[tf], "outputsize": min(bars, 5000),
+        "apikey": key, "timezone": "UTC", "format": "JSON"})
+
+    if resp.status_code >= 500:
+        raise DataError(f"Twelve Data returned HTTP {resp.status_code}.")
+
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        raise DataError("Twelve Data sent a non-JSON response.") from exc
+
+    if isinstance(payload, dict) and payload.get("status") == "error":
+        code, msg = payload.get("code"), payload.get("message", "unknown error")
+        if code == 429:
+            raise DataError("Twelve Data rate limit (8/min on free). Wait a minute.")
+        if code == 401:
+            raise DataError("Twelve Data rejected the key. Check TWELVEDATA_API_KEY.")
+        raise DataError(f"Twelve Data error {code}: {msg}")
+
+    values = payload.get("values") if isinstance(payload, dict) else None
+    if not values:
+        raise DataError(f"Twelve Data returned no candles for {symbol} {tf}.")
+
+    df = pd.DataFrame(values)
+    df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
+    df = df.set_index("datetime").sort_index()
+
+    for col in ("open", "high", "low", "close"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df[["open", "high", "low", "close"]].dropna()
+
+
+PROVIDERS = {
+    "twelvedata": _fetch_twelvedata,
+    "oanda": _fetch_oanda,
+    "binance": _fetch_binance,
+}
 
 
 # --------------------------------------------------------------------------- #
 #  Public interface — unchanged, so nothing else in the project cares
 # --------------------------------------------------------------------------- #
 def fetch_ohlc(symbol: str, tf: str, bars: int = 300) -> pd.DataFrame:
-    provider = getattr(C, "DATA_PROVIDER", "binance").lower()
+    provider = getattr(C, "DATA_PROVIDER", "twelvedata").lower()
     fetch = PROVIDERS.get(provider)
     if fetch is None:
-        raise DataError(f"Unknown DATA_PROVIDER '{provider}'. Use 'binance' or 'oanda'.")
+        raise DataError(f"Unknown DATA_PROVIDER '{provider}'. "
+                        f"Use one of: {', '.join(PROVIDERS)}.")
 
     key = (provider, symbol, tf)
     now = time.time()

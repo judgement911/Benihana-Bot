@@ -39,7 +39,7 @@ RISK_PCT = float(_get("RISK_PCT", "1.0"))          # % of balance per trade
 CONTRACT_SIZE = float(_get("CONTRACT_SIZE", "100"))
 
 # ---------------------------------------------------------------- data source
-DATA_PROVIDER = _get("DATA_PROVIDER", "binance").lower()
+DATA_PROVIDER = _get("DATA_PROVIDER", "twelvedata").lower()
 OANDA_TOKEN = _get("OANDA_TOKEN")
 OANDA_ENV = _get("OANDA_ENV", "practice")  # oz per 1.00 lot XAUUSD
 

@@ -17,9 +17,13 @@ WEBHOOK_SECRET = "pick-something-random-here-9f3k2"
 ALLOWED_USER_IDS = ""
 
 # Where price data comes from.
-#   "binance" — PAXG/USDT gold token. No signup, works immediately.
-#   "oanda"   — true XAU/USD from a real broker. Needs the two settings below.
-DATA_PROVIDER = "binance"
+#   "twelvedata" — true XAU/USD. Free key at twelvedata.com. Works on PythonAnywhere.
+#   "oanda"      — true XAU/USD from a real broker. Free practice account + token.
+#   "binance"    — PAXG gold token, no key. Geo-blocked on PythonAnywhere (451).
+DATA_PROVIDER = "twelvedata"
+
+# Needed if DATA_PROVIDER = "twelvedata". Free at twelvedata.com (800 calls/day).
+TWELVEDATA_API_KEY = ""
 
 # Only needed if DATA_PROVIDER = "oanda".
 # Free practice account at oanda.com -> Manage API Access -> generate token.

@@ -209,6 +209,163 @@ def check_signal_fields(mode: str = "intraday"):
     return not failures
 
 
+def check_instruments() -> bool:
+    """Sizing and formatting are per-instrument, and getting either wrong is
+    silent — a wrong lot size still looks like a number."""
+    import instruments as I
+    ok, fails = True, []
+
+    for inst in I.all_instruments():
+        if I.find(inst.key) is not inst or I.find(inst.display) is not inst:
+            fails.append(f"{inst.display} does not resolve to itself")
+        if inst.contract_size <= 0 or inst.pip <= 0 or inst.digits < 0:
+            fails.append(f"{inst.display} has nonsense contract/pip/digits")
+        # Price decimals must be fine enough to show one unit of movement.
+        if inst.pip < 10 ** -inst.digits:
+            fails.append(f"{inst.display} pip {inst.pip} finer than {inst.digits}dp")
+
+    # Quote conversion: exact where it can be, absent where it cannot.
+    cases = [("eurusd", 1.085, 1.0), ("xauusd", 4500.0, 1.0),
+             ("us500", 5900.0, 1.0), ("usdjpy", 157.2, 1 / 157.2)]
+    for key, px, want in cases:
+        got = I.BY_KEY[key].usd_per_quote(px)
+        if got is None or abs(got - want) > 1e-9:
+            fails.append(f"{key} usd_per_quote {got} != {want}")
+    for key in ("eurjpy", "gbpaud"):
+        if I.BY_KEY[key].usd_per_quote(1.5) is not None:
+            fails.append(f"{key} claims a USD rate it cannot know")
+
+    # Every alias is unambiguous.
+    seen = {}
+    for inst in I.all_instruments():
+        for a in inst.aliases:
+            if a in seen:
+                fails.append(f"alias {a!r} claimed by {seen[a]} and {inst.display}")
+            seen[a] = inst.display
+
+    for f in fails[:6]:
+        print(f"  FAIL {f}")
+        ok = False
+    if ok:
+        print(f"  instruments: {len(I.all_instruments())} defined, sizing and "
+              "aliases consistent")
+    return ok
+
+
+def check_sizing() -> bool:
+    """The printed lot size must actually risk the money it claims."""
+    import instruments as I
+    from indicators import resample_ohlc
+    ok = True
+    prices = {"xauusd": 4500.0, "eurusd": 1.0850, "usdjpy": 157.2,
+              "us500": 5900.0, "xagusd": 31.2}
+    for key, base in prices.items():
+        inst = I.BY_KEY[key]
+        df = synth(kind="uptrend", n=1200)
+        df = df / df["close"].iloc[0] * base
+        e = resample_ohlc(df, "5min"); t = resample_ohlc(df, "15min")
+        b = resample_ohlc(df, "1h")
+        spec = C.MODES["scalp"]
+        for i in range(400, len(e), 5):
+            now = e.index[i]
+            res = evaluate(e.iloc[:i + 1], t[t.index <= now], b[b.index <= now],
+                           spec, now.to_pydatetime(), instrument=inst)
+            lv = res.get("levels")
+            if not lv or lv.get("lots") is None:
+                continue
+            # printed entry - printed stop == printed risk
+            if abs(abs(lv["entry"] - lv["stop"]) - lv["risk_points"]) > 10 ** -inst.digits:
+                print(f"  FAIL {key}: printed levels disagree with printed risk")
+                ok = False
+            usd = (lv["lots"] * inst.contract_size * lv["risk_points"]
+                   * inst.usd_per_quote(lv["entry"]))
+            if abs(usd - lv["risk_cash"]) / lv["risk_cash"] > 0.02:
+                print(f"  FAIL {key}: sized for ${usd:,.0f}, asked for ${lv['risk_cash']:,.0f}")
+                ok = False
+            break
+    if ok:
+        print("  sizing: every asset class risks what it says it risks")
+    return ok
+
+
+def check_journal() -> bool:
+    """The journal grades ties as losses, same as the backtester."""
+    import os, tempfile
+    import pandas as pd
+    C.JOURNAL_FILE = os.path.join(tempfile.mkdtemp(), "journal.json")
+    import importlib
+    import journal as J
+    importlib.reload(J)
+
+    def row(**kw):
+        base = dict(id="t", ts="2026-08-20T10:00:00+00:00", instrument="xauusd",
+                    mode="scalp", entry_tf="5min", direction=1, entry=4500.0,
+                    stop=4490.0, tps=[4510.0, 4520.0], tp_multiples=[1.0, 2.0],
+                    score=75, confidence=60, p_tp1=0.55, outcome="open",
+                    hit_tp1=False, hit_final=False, r=None, resolved_ts=None)
+        base.update(kw)
+        return base
+
+    def bars(seq):
+        idx = pd.date_range("2026-08-20T10:05:00Z", periods=len(seq),
+                            freq="5min", tz="UTC")
+        return pd.DataFrame(
+            [{"open": o, "high": h, "low": l, "close": c} for o, h, l, c in seq],
+            index=idx)
+
+    cases = [
+        ("stop first", [(4500, 4505, 4489, 4492)], "loss"),
+        ("tp1 then stop", [(4500, 4512, 4499, 4510), (4510, 4511, 4489, 4490)], "win"),
+        ("both same bar", [(4500, 4515, 4485, 4500)], "loss"),   # tie -> stop
+        ("neither", [(4500, 4503, 4498, 4501)], "open"),
+    ]
+    ok = True
+    for name, seq, want in cases:
+        J._save([row(id=name)])
+        J.resolve(lambda s, tf, n: bars(seq))
+        got = J._load()[0]["outcome"]
+        if got != want:
+            print(f"  FAIL journal {name}: {got}, expected {want}")
+            ok = False
+    # An empty journal must say so rather than invent a record.
+    C.JOURNAL_FILE = os.path.join(tempfile.mkdtemp(), "empty.json")
+    if "No signals recorded" not in J.format_stats("xauusd"):
+        print("  FAIL empty journal does not say it is empty")
+        ok = False
+    if ok:
+        print("  journal: ties score as losses, empty stays empty")
+    return ok
+
+
+def check_views() -> bool:
+    """Both detail levels, every decision, inside Telegram's size limit."""
+    import view
+    from indicators import resample_ohlc
+    ok, n, worst = True, 0, 0
+    for kind in ("uptrend", "downtrend", "chop"):
+        df = synth(kind=kind, n=2500)
+        e = resample_ohlc(df, "5min"); t = resample_ohlc(df, "15min")
+        b = resample_ohlc(df, "1h")
+        for i in range(400, len(e), 37):
+            now = e.index[i]
+            res = evaluate(e.iloc[:i + 1], t[t.index <= now], b[b.index <= now],
+                           C.MODES["scalp"], now.to_pydatetime())
+            for verbose in (False, True):
+                try:
+                    out = view.render("XAUUSD", res, verbose)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  FAIL render raised {type(exc).__name__}: {exc}")
+                    return False
+                n += 1
+                worst = max(worst, len(out))
+                if len(out) > 4096:
+                    print(f"  FAIL message {len(out)} chars, Telegram caps at 4096")
+                    ok = False
+    if ok:
+        print(f"  view: {n} renders clean, longest {worst} chars of 4096")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -235,4 +392,10 @@ if __name__ == "__main__":
 
     print("\nConfidence and probability:")
     ok = check_probability_model() & check_signal_fields()
+
+    print("\nUniverse, sizing and presentation:")
+    ok &= check_instruments() & check_sizing() & check_views()
+
+    print("\nSignal journal:")
+    ok &= check_journal()
     raise SystemExit(0 if ok else 1)

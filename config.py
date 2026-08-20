@@ -127,6 +127,13 @@ WEIGHTS = {
 # on the free tier, so it warns you by clock instead. All times UTC.
 NEWS_WARNING_HOURS_UTC = {12, 13, 14, 18}  # NFP/CPI 12:30, FOMC 18:00
 
+# /news reads the real Forex Factory calendar. Times are printed in your
+# timezone — a release time you have to convert in your head is one you will
+# get wrong. Default UTC+7 (WIB).
+NEWS_TZ_OFFSET = float(_get("NEWS_TZ_OFFSET", "7"))
+NEWS_TZ_LABEL = _get("NEWS_TZ_LABEL", "WIB")
+NEWS_CACHE_TTL = int(_get("NEWS_CACHE_TTL", "3600"))
+
 # ------------------------------------------------------ the three percentages
 # The signal prints three numbers and they mean three different things. Keep
 # them straight or the whole thing is decoration:
@@ -160,6 +167,30 @@ PROB_ROOM_PENALTY = float(_get("PROB_ROOM_PENALTY", "0.8"))
 # Hard limits on anything printed as a probability. A bot quoting 95% is lying.
 PROB_FLOOR = 0.05
 PROB_CEIL = 0.85
+
+# ------------------------------------------------------------- scanning/alerts
+# A sweep costs 3 requests per instrument. Against a free tier of 8/min, keep
+# the default list short and let the deadline stop it rather than the API.
+SCAN_DEADLINE_S = float(_get("SCAN_DEADLINE_S", "45"))
+CRAZY_MAX_SYMBOLS = int(_get("CRAZY_MAX_SYMBOLS", "8"))
+_raw_scan = _get("SCAN_SYMBOLS", "xauusd,eurusd,gbpusd,usdjpy,audusd,xagusd")
+SCAN_SYMBOLS = [s for s in (x.strip().lower() for x in _raw_scan.split(",")) if s]
+
+ALERTS_FILE = _get("ALERTS_FILE") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "alerts.json"
+)
+# Only an ENTRY this confident is worth interrupting someone for.
+ALERT_MIN_CONFIDENCE = int(_get("ALERT_MIN_CONFIDENCE", "55"))
+
+# -------------------------------------------------------------- signal journal
+# Every ENTRY is written down when issued and graded later against candles the
+# bot had not seen. This is what /stats reads.
+JOURNAL_FILE = _get("JOURNAL_FILE") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "journal.json"
+)
+JOURNAL_MAX_ENTRIES = int(_get("JOURNAL_MAX_ENTRIES", "2000"))
+# Bars after entry to wait before giving up on a signal that never resolved.
+JOURNAL_MAX_BARS = int(_get("JOURNAL_MAX_BARS", "120"))
 
 # ---------------------------------------------------------------- calibration
 # Written by:  python backtest.py --mode intraday --csv FILE --calibrate

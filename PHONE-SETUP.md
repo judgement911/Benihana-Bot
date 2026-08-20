@@ -207,3 +207,28 @@ directly.
 | `Rate limit hit` | 8 requests/min ceiling. Wait 60 seconds |
 | First `/signal` takes a minute | Service was asleep. Set up the cron pinger (step 8) |
 | `No candles returned` | Weekend. Gold closes Friday ~21:00 UTC to Sunday ~22:00 UTC |
+
+---
+
+## Alerts, from the phone
+
+`/alert xauusd scalp` subscribes you. The bot is a webhook though — it only
+wakes when Telegram pokes it, so something has to run the scanner on a clock.
+
+**Tasks** tab → **Create a scheduled task**:
+
+```
+python3 /home/YOURNAME/Benihana-Bot/scan_job.py
+```
+
+A free account allows **one task per day**, so alerts arrive once daily at
+whatever time you pick. Pick the hour your session actually opens. Hourly
+scanning needs a paid plan.
+
+`/alerthelp` in the chat repeats all of this if you forget.
+
+## What `/news` will do on a free account
+
+Fail, and say why. Outbound traffic on free accounts is limited to a
+whitelist and the Forex Factory feed is not on it. Twelve Data is, which is
+why prices work and the calendar does not. Nothing is broken.

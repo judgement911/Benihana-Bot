@@ -203,3 +203,30 @@ means the IP is refused.
 | `rate limiting` / 429 | That provider refuses cloud IPs. Switch DATA_PROVIDER |
 | setWebhook rejected | Reload the web app first, then retry. If it still refuses, tell me — there's a workaround |
 | "No data" on weekends | Gold closes Friday ~21:00 UTC to Sunday ~22:00 UTC |
+
+---
+
+## Scheduled scanning for /alert
+
+**Tasks** tab → `python3 /home/YOURNAME/Benihana-Bot/scan_job.py`
+
+Free accounts get one task a day. The job sweeps every subscription, pushes
+any ENTRY above `ALERT_MIN_CONFIDENCE`, records it in the journal so `/stats`
+can grade it later, and settles anything still open. `--dry-run` prints
+instead of sending.
+
+## Which symbols your key actually serves
+
+```bash
+python3 check_universe.py
+```
+
+One request per instrument, spaced for the free-tier rate limit. Prints a
+`SCAN_SYMBOLS = "..."` line to paste into `pa_config.py`. Indices and energy
+usually need a paid data plan; FX and metals normally work.
+
+## Files the bot writes
+
+`calibration.json`, `journal.json` and `alerts.json` all live next to the
+code. They survive a reload but not a rebuild of the account — back them up
+if the track record matters to you.

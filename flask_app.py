@@ -21,7 +21,12 @@ import requests
 from flask import Flask, jsonify, request
 
 import config as C
+import alerts
+import instruments as I
+import journal
+import news
 import probability as prob
+import scanner
 import view
 from strategy import evaluate
 from market_data import DataError, fetch_ohlc
@@ -133,19 +138,30 @@ def allowed(user_id: int) -> bool:
 # --------------------------------------------------------------------------- #
 #  Rendering
 # --------------------------------------------------------------------------- #
-def parse_args(parts: list[str]) -> tuple[str, str]:
-    symbol_key, mode = "xauusd", "intraday"
+MODE_WORDS = {"day": "intraday", "daytrade": "intraday", "intra": "intraday",
+              "scalping": "scalp", "scalper": "scalp", "swings": "swing"}
+
+
+def parse_args(parts: list[str], default_symbol: str = "xauusd",
+               default_mode: str = "intraday") -> tuple[str, str, str | None]:
+    """Any order, any spelling: '/signal gold scalp', '/signal nas100'.
+    Third element is a complaint about an unrecognised word, or None."""
+    symbol_key, mode, unknown = default_symbol, default_mode, None
     for raw in parts:
         a = raw.lower().strip().lstrip("/")
+        if not a or a in ("calibrate", "off", "on", "clear", "stop"):
+            continue
         if a in C.MODES:
             mode = a
-        elif a in ("day", "daytrade", "intra"):
-            mode = "intraday"
-        elif a in ("scalping", "scalper"):
-            mode = "scalp"
-        elif a in C.SYMBOL_ALIASES:
-            symbol_key = a
-    return symbol_key, mode
+        elif a in MODE_WORDS:
+            mode = MODE_WORDS[a]
+        else:
+            inst = I.find(a)
+            if inst:
+                symbol_key = inst.key
+            elif len(a) >= 2:
+                unknown = raw
+    return symbol_key, mode, unknown
 
 
 HELP = (
@@ -156,9 +172,13 @@ HELP = (
     "<code>/backtest intraday</code> — does the strategy actually make money?\n"
     "<code>/backtest intraday calibrate</code> — same run, and the measured odds "
     "replace the model's guess from then on\n"
+    "<code>/crazymode</code> — scan every market at once\n"
+    "<code>/stats xauusd</code> — what the bot has actually delivered\n"
+    "<code>/alert xauusd scalp</code> — ping me when a setup appears\n"
+    "<code>/news xauusd</code> — the economic calendar that matters here\n"
+    "<code>/symbols</code> — everything it can trade\n"
     "<code>/calibration</code> — is the probability measured or guessed?\n"
-    "<code>/strategy</code> — what the bot checks\n"
-    "<code>/whoami</code> — your Telegram ID\n\n"
+    "<code>/strategy</code> — what the bot checks\n\n"
     "Answers are <b>ENTRY</b>, <b>WAIT</b>, or <b>NO TRADE</b> with three "
     "percentages: <b>confluence</b> (how many rules agree), <b>confidence</b> "
     "(that score minus hazards the rules cannot see) and <b>probability</b> "
@@ -194,19 +214,22 @@ STRATEGY = (
 
 def do_signal(chat_id: int, symbol_key: str, mode: str,
               message_id: int | None = None, verbose: bool = False):
-    symbol = C.SYMBOL_ALIASES.get(symbol_key, "XAU/USD")
+    inst = I.BY_KEY.get(symbol_key, I.GOLD)
+    symbol = inst.symbol
     spec = C.MODES[mode]
 
     if message_id is None:
-        placeholder = send(chat_id, f"⏳ Reading {symbol} {mode}…")
+        placeholder = send(chat_id, f"⏳ Reading {inst.display} {mode}…")
         message_id = (placeholder or {}).get("result", {}).get("message_id")
 
     try:
         entry_df = fetch_ohlc(symbol, spec.entry_tf, spec.bars)
         trend_df = fetch_ohlc(symbol, spec.trend_tf, spec.bars)
         bias_df = fetch_ohlc(symbol, spec.bias_tf, spec.bars)
-        res = evaluate(entry_df, trend_df, bias_df, spec, datetime.now(timezone.utc))
-        text = view.render(symbol, res, verbose)
+        res = evaluate(entry_df, trend_df, bias_df, spec,
+                       datetime.now(timezone.utc), instrument=inst)
+        text = view.render(inst.display, res, verbose)
+        journal.record(res)   # graded later by /stats
     except DataError as exc:
         text = f"⚠️ <b>Data problem</b>\n{html.escape(str(exc))}"
     except Exception as exc:  # noqa: BLE001
@@ -217,7 +240,8 @@ def do_signal(chat_id: int, symbol_key: str, mode: str,
 
 
 def do_backtest(chat_id: int, symbol_key: str, mode: str, calibrate: bool = False):
-    symbol = C.SYMBOL_ALIASES.get(symbol_key, "XAU/USD")
+    inst = I.BY_KEY.get(symbol_key, I.GOLD)
+    symbol = inst.symbol
     spec = C.MODES[mode]
 
     send(chat_id, f"⏱ Backtesting {symbol} {mode}. Takes about a minute.")
@@ -256,6 +280,121 @@ def do_calibration(chat_id: int):
                   f"<pre>{html.escape(prob.calibration_report())}</pre>")
 
 
+# --------------------------------------------------------------------------- #
+#  /stats — what the bot actually delivered
+# --------------------------------------------------------------------------- #
+def do_stats(chat_id: int, symbol_key: str, mode: str = None):
+    # Settle anything outstanding first, so the numbers are current. Cheap
+    # when nothing is open; skipped entirely if the provider is unhappy.
+    try:
+        journal.resolve(fetch_ohlc)
+    except Exception:  # noqa: BLE001
+        log.warning("journal resolve failed: %s", traceback.format_exc())
+    send(chat_id, journal.format_stats(symbol_key, mode))
+
+
+# --------------------------------------------------------------------------- #
+#  /news — the real calendar, not a guess by the clock
+# --------------------------------------------------------------------------- #
+def do_news(chat_id: int, symbol_key: str):
+    inst = I.BY_KEY.get(symbol_key, I.GOLD)
+    try:
+        send(chat_id, news.format_news(inst))
+    except Exception:  # noqa: BLE001
+        log.error("news failed: %s", traceback.format_exc())
+        send(chat_id, "⚠️ Could not read the calendar just now.")
+
+
+# --------------------------------------------------------------------------- #
+#  /alert — subscribe to high-quality setups
+# --------------------------------------------------------------------------- #
+ALERT_HELP = (
+    "<b>Alerts</b>\n\n"
+    "<code>/alert xauusd scalp</code> — tell me when gold sets up\n"
+    "<code>/alert</code> — what you are watching\n"
+    "<code>/alert off</code> — stop everything\n\n"
+    "You get a message the moment an ENTRY appears at "
+    f"{C.ALERT_MIN_CONFIDENCE}%+ confidence, with entry, stop and targets.\n\n"
+    "<b>One thing you need to know.</b> This bot is a webhook — it only runs "
+    "when Telegram pokes it, so it cannot watch the market on its own. "
+    "Something has to run <code>scan_job.py</code> on a schedule.\n\n"
+    "On PythonAnywhere: <b>Tasks</b> tab → "
+    "<code>python3 ~/Benihana-Bot/scan_job.py</code>. A free account gets one "
+    "task a day, so alerts fire once daily. Hourly needs a paid plan, or run "
+    "the job from any machine that stays on."
+)
+
+
+def do_alert(chat_id: int, args: list):
+    words = [a.lower().lstrip("/") for a in args]
+
+    if any(w in ("off", "stop", "clear", "none") for w in words):
+        n = alerts.remove(chat_id)
+        send(chat_id, f"Cleared {n} alert{'s' if n != 1 else ''}." if n
+             else "You had no alerts set.")
+        return
+    if not args:
+        send(chat_id, alerts.format_list(chat_id))
+        return
+
+    symbol_key, mode, bad = parse_args(args, default_mode="intraday")
+    if bad:
+        send(chat_id, f"Don't know <b>{html.escape(bad)}</b>. Try /symbols.")
+        return
+    inst = I.BY_KEY[symbol_key]
+    added = alerts.add(chat_id, symbol_key, mode)
+    if not added:
+        send(chat_id, f"Already watching {inst.display} {mode}.")
+        return
+    send(chat_id,
+         f"🔔 Watching <b>{inst.display}</b> on <b>{mode}</b>.\n\n"
+         f"You will get the full signal — entry, stop, targets — as soon as "
+         f"one appears at {C.ALERT_MIN_CONFIDENCE}%+ confidence.\n\n"
+         f"<i>Delivery needs the scan job running. /alerthelp explains.</i>")
+
+
+# --------------------------------------------------------------------------- #
+#  /crazymode — sweep the board
+# --------------------------------------------------------------------------- #
+def do_crazymode(chat_id: int, mode: str, keys: list = None,
+                 message_id: int | None = None):
+    keys = keys or C.SCAN_SYMBOLS
+    keys = [k for k in keys if k in I.BY_KEY][:C.CRAZY_MAX_SYMBOLS]
+    if not keys:
+        send(chat_id, "Nothing to scan — check SCAN_SYMBOLS in config.")
+        return
+
+    placeholder = send(chat_id, f"⚔️ Scanning {len(keys)} markets on {mode}…")
+    mid = (placeholder or {}).get("result", {}).get("message_id")
+
+    try:
+        result = scanner.scan(keys, mode, fetch_ohlc, log=log.warning)
+        text = scanner.format_scan(result)
+        for res in scanner.tradeable(result["rows"]):
+            journal.record(res)
+    except Exception:  # noqa: BLE001
+        log.error("crazymode failed: %s", traceback.format_exc())
+        text = "⚠️ Scan failed. Check the log."
+    deliver(chat_id, mid, text, "xauusd", mode)
+
+
+# --------------------------------------------------------------------------- #
+#  /symbols — what it can trade
+# --------------------------------------------------------------------------- #
+def do_symbols(chat_id: int):
+    out = "<b>Tradeable universe</b>\n"
+    for label, items in I.grouped().items():
+        if not items:
+            continue
+        out += f"\n<b>{label}</b>\n"
+        out += "<code>" + " ".join(i.display for i in items) + "</code>\n"
+    out += ("\n<i>Type any of them, or a nickname: gold, cable, nas100, "
+            "aussie. Free data plans usually cover FX and metals; indices "
+            "and energy often need a paid plan — "
+            "<code>python check_universe.py</code> tells you which.</i>")
+    send(chat_id, out)
+
+
 def handle_message(msg: dict):
     chat_id = msg["chat"]["id"]
     user_id = msg.get("from", {}).get("id", 0)
@@ -281,14 +420,35 @@ def handle_message(msg: dict):
     elif cmd == "/strategy":
         send(chat_id, STRATEGY)
     elif cmd == "/signal":
-        symbol_key, mode = parse_args(args)
+        symbol_key, mode, bad = parse_args(args)
+        if bad:
+            send(chat_id, f"Don't know <b>{html.escape(bad)}</b>. "
+                          f"Try /symbols for the list.")
+            return
         do_signal(chat_id, symbol_key, mode)
     elif cmd == "/backtest":
         calibrate = any(a.lower().lstrip("-") == "calibrate" for a in args)
-        symbol_key, mode = parse_args(args)
+        symbol_key, mode, _ = parse_args(args)
         do_backtest(chat_id, symbol_key, mode, calibrate)
     elif cmd == "/calibration":
         do_calibration(chat_id)
+    elif cmd == "/stats":
+        symbol_key, mode, _ = parse_args(args)
+        do_stats(chat_id, symbol_key, mode if any(
+            a.lower().lstrip("/") in C.MODES or a.lower() in MODE_WORDS
+            for a in args) else None)
+    elif cmd == "/news":
+        symbol_key, _, _ = parse_args(args)
+        do_news(chat_id, symbol_key)
+    elif cmd in ("/alert", "/alerts"):
+        do_alert(chat_id, args)
+    elif cmd == "/alerthelp":
+        send(chat_id, ALERT_HELP)
+    elif cmd in ("/crazymode", "/scan"):
+        _, mode, _ = parse_args(args, default_mode="intraday")
+        do_crazymode(chat_id, mode)
+    elif cmd == "/symbols":
+        do_symbols(chat_id)
     else:
         send(chat_id, "Unknown command. Try /help")
 

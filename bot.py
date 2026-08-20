@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 from datetime import datetime, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -226,21 +227,34 @@ async def cmd_strategy(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def do_signal(symbol: str, mode: str, send, edit=None) -> None:
+    # render() used to sit in an else: clause, which is NOT covered by the
+    # except handlers above it. Any error formatting the reply escaped, the
+    # placeholder was never edited, and the chat sat on "Reading…" forever.
+    # Rendering belongs inside the try.
     try:
         res = await analyse(symbol, mode)
-    except DataError as exc:
-        text = f"⚠️ <b>Data problem</b>\n{exc}"
-    except Exception as exc:  # noqa: BLE001
-        log.exception("analysis failed")
-        text = f"⚠️ Unexpected error: <code>{type(exc).__name__}</code>"
-    else:
         text = render(symbol, res)
+    except DataError as exc:
+        text = f"⚠️ <b>Data problem</b>\n{html.escape(str(exc))}"
+    except Exception as exc:  # noqa: BLE001
+        log.exception("signal failed")
+        text = f"⚠️ Unexpected error: <code>{html.escape(type(exc).__name__)}</code>"
 
     key = symbol.replace("/", "").lower()
-    if edit:
-        await edit(text, parse_mode=ParseMode.HTML, reply_markup=keyboard(key))
-    else:
-        await send(text, parse_mode=ParseMode.HTML, reply_markup=keyboard(key))
+    deliver = edit or send
+
+    # Last line of defence: if Telegram rejects the HTML — an unescaped angle
+    # bracket in an error string is enough — resend as plain text rather than
+    # leaving the placeholder stranded.
+    try:
+        await deliver(text, parse_mode=ParseMode.HTML, reply_markup=keyboard(key))
+    except Exception:  # noqa: BLE001
+        log.exception("HTML delivery failed, falling back to plain text")
+        stripped = re.sub(r"<[^>]+>", "", text)
+        try:
+            await deliver(stripped, reply_markup=keyboard(key))
+        except Exception:  # noqa: BLE001
+            log.exception("plain-text delivery failed too")
 
 
 async def cmd_signal(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

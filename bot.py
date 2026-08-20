@@ -16,6 +16,8 @@ from telegram.ext import (
 )
 
 import config as C
+import probability as prob
+from backtest import build_calibration, write_calibration
 from backtest import run as backtest_run
 from data import DataError, fetch_ohlc
 from strategy import DIR_NAME, evaluate
@@ -63,11 +65,6 @@ def parse_args(args: list[str]) -> tuple[str, str, str | None]:
     return C.SYMBOL_ALIASES[symbol_key], mode, None
 
 
-def bar(pct: int, width: int = 14) -> str:
-    filled = round(pct / 100 * width)
-    return "█" * filled + "░" * (width - filled)
-
-
 def fmt_price(x: float) -> str:
     return f"{x:,.2f}"
 
@@ -84,7 +81,9 @@ def render(symbol: str, res: dict) -> str:
 
     # --- vetoed outright -------------------------------------------------- #
     if res["vetoes"]:
-        body = "🚫 <b>NO TRADE</b>\n<i>Hard filter blocked this — score not even calculated.</i>\n\n"
+        body = "🚫 <b>NO TRADE</b>\n"
+        body += "Confidence <b>0%</b> · no probability quoted\n"
+        body += "<i>Hard filter blocked this — score not even calculated.</i>\n\n"
         for v in res["vetoes"]:
             body += f"• {v}\n"
         return head + body
@@ -95,8 +94,15 @@ def render(symbol: str, res: dict) -> str:
     if dec == "ENTRY":
         body += f" — {label}"
     body += "</b>\n"
-    body += f"Confluence <b>{res['score']}%</b>  <code>{bar(res['score'])}</code>\n"
-    body += f"<i>rule agreement, not win probability</i>\n\n"
+    body += f"<pre>{html.escape(prob.read_block(res))}</pre>\n"
+
+    drags = prob.drag_note(res)
+    if drags:
+        body += f"<i>{html.escape(drags)}</i>\n"
+    basis = prob.basis_note(res)
+    if basis:
+        body += f"<i>Odds: {html.escape(basis)}</i>\n"
+    body += "\n"
 
     lv = res["levels"]
     if dec == "ENTRY" and lv:
@@ -170,9 +176,15 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "<code>/signal xauusd swing</code>\n\n"
         "Short forms work too: <code>/signal scalp</code> defaults to gold.\n\n"
         "You get one of three answers — <b>ENTRY</b>, <b>WAIT</b>, or <b>NO TRADE</b> — "
-        "with a confluence score.\n\n"
+        "with three percentages:\n"
+        "• <b>Confluence</b> — how many rules agree.\n"
+        "• <b>Confidence</b> — that score minus hazards the rules cannot see.\n"
+        "• <b>Probability</b> — odds the target trades before the stop.\n\n"
         "<code>/backtest intraday</code> — proves whether the rules make money. "
         "Run this before risking anything.\n"
+        "<code>/backtest intraday calibrate</code> — same run, but the measured "
+        "odds replace the model's guess in every later signal.\n"
+        "<code>/calibration</code> — is the probability measured or guessed?\n"
         "<code>/strategy</code> — what the bot checks.\n\n"
         "Read /strategy before you trust a single number in here.",
         parse_mode=ParseMode.HTML,
@@ -192,10 +204,22 @@ async def cmd_strategy(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Hard vetoes</b> (answer is NO TRADE, no score given):\n"
         "ADX under 15 · timeframe conflict · ATR over 2.5x or under 0.4x normal · "
         "RSI already extreme · stale data\n\n"
-        "<b>The score</b> is a weighted sum of 8 conditions totalling 100. "
-        "70+ with a live trigger = ENTRY. 50–69 = WAIT. Under 50 = NO TRADE.\n\n"
-        "It is agreement between rules. It is <b>not</b> a probability of winning, "
-        "and nobody has verified the rules are profitable on your broker's data yet. "
+        "<b>Confluence</b> is a weighted sum of 8 conditions totalling 100. "
+        "70+ with a live trigger = ENTRY. 50–69 = WAIT. Under 50 = NO TRADE. "
+        "It is agreement between rules — nothing more.\n\n"
+        "<b>Confidence</b> starts at that score and loses points for what the "
+        "scorecard cannot see: news hours, dead sessions, a bias EMA built on "
+        "short history, no room to the next swing. The signal lists every "
+        "deduction it made.\n\n"
+        "<b>Probability</b> is the chance the target trades before the stop. It "
+        "starts from barrier maths — with a 1R stop and a kR target a driftless "
+        "market pays 1/(1+k) of the time, which is also the win rate you need to "
+        "break even — then adds a capped edge for the confluence score and "
+        "subtracts for costs and for swings sitting in the way. Once you run "
+        "<code>/backtest intraday calibrate</code>, real results "
+        "override the model. <code>/calibration</code> says which you are "
+        "looking at.\n\n"
+        "Nobody has verified these rules are profitable on your broker's data. "
         "Run <code>backtest.py</code> first.",
         parse_mode=ParseMode.HTML,
     )
@@ -245,13 +269,37 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await do_signal(symbol, mode, q.message.reply_text, q.edit_message_text)
 
 
+def save_calibration(stats: dict, mode: str, symbol: str, bars: int) -> str:
+    """Fold a finished backtest into calibration.json so live signals quote
+    measured hit rates. Returns the line to show the user."""
+    trades = stats.get("trade_log") or []
+    if len(trades) < C.CALIBRATION_MIN_TRADES:
+        return (f"Not calibrated: {len(trades)} trades is under the "
+                f"{C.CALIBRATION_MIN_TRADES}-trade minimum.")
+    try:
+        entry = build_calibration(trades, mode, symbol, bars, "telegram")
+        write_calibration(entry, mode, symbol)
+    except OSError as exc:
+        return f"Could not write calibration: {exc}"
+    return (f"✅ Calibrated {mode} on {len(trades)} trades. Signals now quote "
+            f"measured odds — see /calibration.")
+
+
 async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Runs the real strategy over history and reports expectancy. Slow on
-    purpose — this is the step that tells you whether any of this works."""
+    purpose — this is the step that tells you whether any of this works.
+
+    Add the word `calibrate` to also teach the bot: the measured hit rates get
+    written to calibration.json and every later signal quotes them instead of
+    the model's guess."""
     if not allowed(update):
         return
 
-    symbol, mode, _ = parse_args(ctx.args or [])
+    args = list(ctx.args or [])
+    calibrate = any(a.lower().lstrip("-") == "calibrate" for a in args)
+    args = [a for a in args if a.lower().lstrip("-") != "calibrate"]
+
+    symbol, mode, _ = parse_args(args)
     spec = C.MODES[mode]
     msg = await update.message.reply_text(
         f"⏱ Backtesting {symbol} {mode} on {spec.entry_tf} history.\n"
@@ -261,9 +309,13 @@ async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     loop = asyncio.get_running_loop()
     try:
         df = await loop.run_in_executor(None, fetch_ohlc, symbol, spec.entry_tf, 5000)
-        _, report = await loop.run_in_executor(None, backtest_run, df, mode)
+        stats, report = await loop.run_in_executor(None, backtest_run, df, mode)
         header = f"<b>{symbol} {mode} backtest</b>\n{len(df)} × {spec.entry_tf} bars\n"
         text = header + f"<pre>{html.escape(report)}</pre>"
+        if calibrate:
+            text += "\n" + html.escape(
+                save_calibration(stats, mode, symbol, len(df))
+            )
     except DataError as exc:
         text = f"⚠️ <b>Data problem</b>\n{exc}"
     except Exception as exc:  # noqa: BLE001
@@ -271,6 +323,16 @@ async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         text = f"⚠️ Backtest error: <code>{type(exc).__name__}</code>"
 
     await msg.edit_text(text, parse_mode=ParseMode.HTML)
+
+
+async def cmd_calibration(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Says plainly whether the probabilities are measured or modelled."""
+    if not allowed(update):
+        return
+    await update.message.reply_text(
+        f"<b>Probability calibration</b>\n<pre>{html.escape(prob.calibration_report())}</pre>",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def cmd_whoami(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -286,6 +348,7 @@ def main() -> None:
     app.add_handler(CommandHandler("strategy", cmd_strategy))
     app.add_handler(CommandHandler("signal", cmd_signal))
     app.add_handler(CommandHandler("backtest", cmd_backtest))
+    app.add_handler(CommandHandler("calibration", cmd_calibration))
     app.add_handler(CommandHandler("whoami", cmd_whoami))
     app.add_handler(CallbackQueryHandler(on_button, pattern=r"^s\|"))
 

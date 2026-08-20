@@ -121,8 +121,22 @@ Web tab → **Reload**. Now only you can use it.
 ```
 
 Read the bucket table. Total R negative means the strategy loses money — don't trade
-it. If expectancy doesn't climb as confidence climbs, ignore the percentage and treat
+it. If expectancy doesn't climb as confluence climbs, ignore the percentage and treat
 ENTRY as a plain yes/no.
+
+The report ends with a grade on the bot's own probability number — what it promised
+versus what the market paid. To fold that correction into live signals, open a **Bash
+console** and run:
+
+```
+cd ~/signalbot
+python3 backtest.py --mode intraday --live --calibrate
+```
+
+That writes `calibration.json` next to the code. Every signal afterwards quotes measured
+hit rates instead of modelled ones, and `/calibration` in Telegram shows the sample
+behind them. Repeat per mode; the file holds all three. No reload needed — the web app
+notices the new file on its own. Budget a few CPU-seconds for each run.
 
 ---
 

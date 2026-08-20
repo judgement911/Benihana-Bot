@@ -149,6 +149,67 @@ def _in_session(now: datetime, spec: C.ModeSpec) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+#  What kind of order is this?
+# --------------------------------------------------------------------------- #
+ORDER_LABEL = {
+    ("market", LONG): "BUY at market",
+    ("market", SHORT): "SELL at market",
+    ("limit", LONG): "BUY LIMIT",
+    ("limit", SHORT): "SELL LIMIT",
+    ("stop", LONG): "BUY STOP",
+    ("stop", SHORT): "SELL STOP",
+}
+
+
+def _order_plan(decision: str, direction: int, price: float, e: dict,
+                entry_df: pd.DataFrame, spec: C.ModeSpec, atr: float,
+                inst) -> dict:
+    """Where the order belongs, and what type it has to be to get there.
+
+    This is a pullback strategy, so the two pending cases are genuinely
+    different trades:
+
+      LIMIT  price has not come back yet. The order rests down in the EMA20
+             zone and fills if the pullback arrives.
+      STOP   price is already in the zone but nothing has turned. The order
+             sits beyond the last swing so it only fills if the market proves
+             the turn first.
+
+    Which one you get depends on where price is, not on a preference.
+    """
+    if decision == "ENTRY":
+        return {"kind": "market", "price": round(float(price), inst.digits),
+                "label": ORDER_LABEL[("market", direction)],
+                "note": "every condition met on the last close — executable now"}
+
+    zone = float(e["ema20"])
+    tol = 0.15 * atr
+
+    if direction == LONG:
+        pulled_back = price <= zone + tol
+    else:
+        pulled_back = price >= zone - tol
+
+    if not pulled_back:
+        # Rest the order in the zone the strategy actually wants to buy.
+        return {"kind": "limit", "price": round(zone, inst.digits),
+                "label": ORDER_LABEL[("limit", direction)],
+                "note": f"rests in the EMA20 zone, {inst.fmt_risk(abs(price - zone))} "
+                        f"from here"}
+
+    # In the zone already; what is missing is confirmation. Sit beyond the
+    # recent extreme so the market has to move your way to fill you.
+    recent = entry_df.tail(3)
+    if direction == LONG:
+        trigger = max(float(recent["high"].max()), price) + 0.10 * atr
+    else:
+        trigger = min(float(recent["low"].min()), price) - 0.10 * atr
+    return {"kind": "stop", "price": round(float(trigger), inst.digits),
+            "label": ORDER_LABEL[("stop", direction)],
+            "note": "already in the zone — fills only if the turn confirms"}
+
+
+# --------------------------------------------------------------------------- #
 #  Main entry point
 # --------------------------------------------------------------------------- #
 def evaluate(
@@ -387,60 +448,75 @@ def evaluate(
     out["missing"] = [r["text"] for r in reasons if not r["ok"]]
 
     # ------------------------------------------------------------------ LEVELS
-    buffer = 0.35 * atr_e
-    min_stop = spec.atr_sl_mult * atr_e
+    def build_levels(entry_px: float) -> tuple[dict, Optional[float], bool]:
+        """Stop, targets and size for an entry at `entry_px`.
 
-    if direction == LONG:
-        struct_stop = lows[0][1] if lows else price - min_stop
-        sl = min(struct_stop - buffer, price - min_stop)
-        opposing = highs[0][1] if highs and highs[0][1] > price else None
-    else:
-        struct_stop = highs[0][1] if highs else price + min_stop
-        sl = max(struct_stop + buffer, price + min_stop)
-        opposing = lows[0][1] if lows and lows[0][1] < price else None
+        Structure places the stop — the swing the trade is wrong beneath — but
+        only inside the band the mode's volatility justifies. Before this was
+        bounded, a swing low 90 points away simply became a 90-point stop.
+        """
+        buffer = C.SL_STRUCT_BUFFER * atr_e
+        floor_d = spec.atr_sl_mult * atr_e
+        ceil_d = spec.max_sl_mult * atr_e
 
-    risk_per_unit = abs(price - sl)
-    tps = [
-        price + direction * risk_per_unit * m for m in spec.tp_multiples
-    ]
+        if direction == LONG:
+            struct = (lows[0][1] - buffer) if lows else entry_px - floor_d
+            raw = min(struct, entry_px - floor_d)         # further of the two
+            sl = max(raw, entry_px - ceil_d)              # but inside the band
+            opposing = highs[0][1] if highs and highs[0][1] > entry_px else None
+        else:
+            struct = (highs[0][1] + buffer) if highs else entry_px + floor_d
+            raw = max(struct, entry_px + floor_d)
+            sl = min(raw, entry_px + ceil_d)
+            opposing = lows[0][1] if lows and lows[0][1] < entry_px else None
 
-    room_rr = None
-    if opposing is not None and risk_per_unit > 0:
-        room_rr = abs(opposing - price) / risk_per_unit
+        clamped = abs(raw - sl) > 1e-9
 
-    risk_cash = balance * risk_pct / 100.0
-    d = inst.digits
+        d = inst.digits
+        # Size from the levels as PRINTED, not the unrounded ones. Subtracting
+        # the stop from the entry on screen has to give you the risk on screen,
+        # and the lot size has to match that same number.
+        entry_r, stop_r = round(float(entry_px), d), round(float(sl), d)
+        risk_shown = abs(entry_r - stop_r)
+        tps = [entry_r + direction * risk_shown * m for m in spec.tp_multiples]
 
-    # Size from the levels as PRINTED, not the unrounded ones. Subtracting the
-    # stop from the entry on screen has to give you the risk on screen, and the
-    # lot size has to match that same number.
-    entry_r, stop_r = round(float(price), d), round(float(sl), d)
-    risk_shown = abs(entry_r - stop_r)
+        rr = None
+        if opposing is not None and risk_shown > 0:
+            rr = abs(opposing - entry_r) / risk_shown
 
-    # Risk per lot lands in the quote currency; convert before dividing, or a
-    # 23,600-yen stop on USD/JPY reads as a 23,600-dollar stop and the size
-    # collapses to zero.
-    usd_per_quote = inst.usd_per_quote(entry_r)
-    lots = None
-    if risk_shown > 0 and usd_per_quote:
-        risk_per_lot_usd = risk_shown * inst.contract_size * usd_per_quote
-        if risk_per_lot_usd > 0:
-            lots = risk_cash / risk_per_lot_usd
-    out["levels"] = {
-        "entry": entry_r,
-        "stop": stop_r,
-        "risk_points": round(risk_shown, d),
-        "risk_display": inst.fmt_risk(risk_shown),
-        "tps": [round(float(x), d) for x in tps],
-        "tp_multiples": spec.tp_multiples,
-        "room_rr": round(float(room_rr), 2) if room_rr else None,
-        "next_obstacle": round(float(opposing), d) if opposing else None,
-        # Small sizes need more than two decimals or a 0.074-lot gold trade
-        # prints as 0.07 and quietly risks 5% less than you asked for.
-        "lots": None if lots is None else round(float(lots), 2 if lots >= 1 else 3),
-        "risk_cash": round(float(risk_cash), 2),
-        "atr": round(float(atr_e), d),
-    }
+        risk_cash = balance * risk_pct / 100.0
+
+        # Risk per lot lands in the quote currency; convert before dividing, or
+        # a 23,600-yen stop on USD/JPY reads as a 23,600-dollar stop and the
+        # size collapses to zero.
+        usd_per_quote = inst.usd_per_quote(entry_r)
+        lots = None
+        if risk_shown > 0 and usd_per_quote:
+            risk_per_lot_usd = risk_shown * inst.contract_size * usd_per_quote
+            if risk_per_lot_usd > 0:
+                lots = risk_cash / risk_per_lot_usd
+
+        levels = {
+            "entry": entry_r,
+            "stop": stop_r,
+            "risk_points": round(risk_shown, d),
+            "risk_display": inst.fmt_risk(risk_shown),
+            "risk_pct": round(100.0 * risk_shown / entry_r, 3) if entry_r else None,
+            "stop_atr": round(risk_shown / atr_e, 2) if atr_e else None,
+            "stop_clamped": clamped,
+            "tps": [round(float(x), d) for x in tps],
+            "tp_multiples": spec.tp_multiples,
+            "room_rr": round(float(rr), 2) if rr else None,
+            "next_obstacle": round(float(opposing), d) if opposing else None,
+            # Small sizes need more than two decimals or a 0.074-lot gold trade
+            # prints as 0.07 and quietly risks 5% less than you asked for.
+            "lots": None if lots is None else round(float(lots), 2 if lots >= 1 else 3),
+            "risk_cash": round(float(risk_cash), 2),
+            "atr": round(float(atr_e), d),
+        }
+        return levels, rr, clamped
+
+    out["levels"], room_rr, _ = build_levels(price)
 
     # ---------------------------------------------------------------- DECISION
     momentum_pts = next(r["points"] for r in reasons if r["key"] == "momentum_trigger")
@@ -465,6 +541,16 @@ def evaluate(
     else:
         out["decision"] = "NO TRADE"
 
+    # ------------------------------------------------------------------- ORDER
+    # An ENTRY is executable now. Anything else is a plan for a price we are
+    # not at, and quoting its stop and targets off "price now" describes a
+    # trade nobody can place. Work out where the order actually belongs, then
+    # rebuild the levels around that price.
+    out["order"] = _order_plan(out["decision"], direction, price, e, entry_df,
+                               spec, atr_e, inst)
+    if out["order"]["kind"] != "market":
+        out["levels"], room_rr, _ = build_levels(out["order"]["price"])
+
     news_hour = now_utc.hour in C.NEWS_WARNING_HOURS_UTC
     if news_hour:
         out["news_warning"] = True
@@ -487,11 +573,14 @@ def evaluate(
     out["confidence"] = prob.confidence(
         out["score"], flags, clean_sweep=all(r["ok"] for r in reasons)
     )
+    # Cost in R is spread / stop distance, so a tighter stop is correctly
+    # more expensive rather than free.
     out["probability"] = prob.estimate(
         score=out["score"],
         targets_r=spec.tp_multiples,
         room_rr=room_rr,
         mode=spec.name,
+        cost_r=inst.cost_r(out["levels"]["risk_points"]),
     )
 
     return out

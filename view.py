@@ -70,7 +70,11 @@ def _levels_block(res: dict, live: bool) -> str:
     """The part people actually came for."""
     lv = res["levels"]
     inst = _inst(res)
-    rows = [("Entry", lv["entry"], "market" if live else "price now"),
+    order = res.get("order") or {}
+    entry_note = order.get("label") or ("market" if live else "price now")
+    if order.get("kind") == "market":
+        entry_note = "market"
+    rows = [("Entry", lv["entry"], entry_note),
             ("Stop Loss", lv["stop"],
              lv.get("risk_display") or f"{lv['risk_points']} pts")]
     for n, (tp, m) in enumerate(zip(lv["tps"], lv["tp_multiples"]), start=1):
@@ -140,11 +144,16 @@ def _compact(symbol: str, res: dict) -> str:
     if nums:
         out += nums + "\n"
 
+    order = res.get("order") or {}
     if dec != "ENTRY":
         needs = _needs(res)
         if needs:
             out += f"<i>Needs: {_e(needs)}</i>\n"
-    if dec == "WAIT":
+    if dec == "WAIT" and order.get("note"):
+        note = order['note']
+        out += (f"<i>{_e(note[0].upper() + note[1:])}. "
+                f"Levels move until it fills.</i>\n")
+    elif dec == "WAIT":
         out += "<i>Not live — levels move until it triggers.</i>\n"
 
     if res.get("news_warning"):
@@ -194,11 +203,24 @@ def _verbose(symbol: str, res: dict) -> str:
     lv = res["levels"]
     if lv and dec in ("ENTRY", "WAIT"):
         out += ("<b>Trade plan</b>\n" if dec == "ENTRY" else "<b>Provisional plan</b>\n")
+        o = res.get("order") or {}
+        if o.get("label"):
+            out += f"<b>{_e(o['label'])}</b>"
+            if o.get("kind") != "market":
+                out += f" @ {_e(_p(o['price'], _inst(res)))}"
+            out += f"\n<i>{_e(o.get('note', ''))}</i>\n"
         out += f"<pre>{_e(_levels_block(res, live=dec == 'ENTRY'))}\n"
         size = (f"{lv['lots']:>10} lots = {_cash(lv['risk_cash'])}" if lv.get("lots") is not None
                 else f"{'—':>10} (cross pair, size it yourself)")
         out += f"{'Size':<9}  {size}\n"
-        out += f"{'ATR':<9}  {lv['atr']:>10} pts</pre>\n"
+        out += f"{'ATR':<9}  {lv['atr']:>10} pts\n"
+        pct = lv.get("risk_pct")
+        atr_x = lv.get("stop_atr")
+        out += (f"{'Stop is':<9}  {atr_x:>10} x ATR"
+                + (f", {pct}% of price" if pct else "") + "</pre>\n")
+        if lv.get("stop_clamped"):
+            out += ("<i>Stop capped at the mode's ceiling — the structural swing "
+                    "sat further away than this timeframe justifies.</i>\n")
         if dec == "WAIT":
             out += ("<i>Not a live trade. These levels are recomputed from the "
                     "current price every time you ask, so they move until the "
@@ -241,3 +263,49 @@ def buttons(symbol_key: str, mode: str, verbose: bool = False) -> list[list[tupl
               else ("🔍 Details", f"s|{symbol_key}|{mode}|v"))
     row2 = [toggle, ("🔄 Refresh", f"s|{symbol_key}|{mode}|{'v' if verbose else 'c'}")]
     return [row1, row2]
+
+
+# --------------------------------------------------------------------------- #
+#  Command reference. One copy, both front ends.
+# --------------------------------------------------------------------------- #
+HELP = (
+    "<b>BENIHANA — commands</b>\n\n"
+
+    "<b>Signals</b>\n"
+    "<code>/signal xauusd scalp</code> — one market, full read\n"
+    "<code>/signal eurusd intraday</code> · <code>/signal gold swing</code>\n"
+    "Modes: <b>scalp</b> 5m/15m/1h · <b>intraday</b> 15m/1h/4h · "
+    "<b>swing</b> 4h/1D/1W\n"
+    "<code>/crazymode</code> — scan every market and rank them\n"
+    "<code>/symbols</code> — the 43 instruments it trades\n\n"
+
+    "<b>Track record</b>\n"
+    "<code>/stats xauusd</code> — what the bot has actually delivered\n"
+    "<code>/calibration</code> — are the odds measured, or still guessed?\n"
+    "<code>/backtest intraday</code> — replay the rules over history\n"
+    "<code>/backtest intraday calibrate</code> — same run, and the measured "
+    "odds replace the guess from then on\n\n"
+
+    "<b>Alerts and news</b>\n"
+    "<code>/alert xauusd scalp</code> — ping me when a setup appears\n"
+    "<code>/alerts</code> — what you are subscribed to · "
+    "<code>/alert clear</code> — stop them\n"
+    "<code>/news xauusd</code> — calendar entries that move this market\n\n"
+
+    "<b>Reference</b>\n"
+    "<code>/strategy</code> — what the bot checks and why\n"
+    "<code>/alerthelp</code> — why alerts need a scheduled task\n"
+    "<code>/whoami</code> — your Telegram ID\n\n"
+
+    "<b>Reading a signal</b>\n"
+    "Three answers: <b>ENTRY</b> (executable now), <b>WAIT</b> (a setup "
+    "forming), <b>NO TRADE</b>.\n\n"
+    "The <b>Entry</b> row says how to place it:\n"
+    "• <b>market</b> — every condition met, go now\n"
+    "• <b>LIMIT</b> — rests in the pullback zone, fills if price comes back\n"
+    "• <b>STOP</b> — beyond the last swing, fills only if the turn confirms\n\n"
+    "Three percentages: <b>confluence</b> (how many rules agree), "
+    "<b>confidence</b> (that score minus hazards the rules cannot see), "
+    "<b>odds</b> (chance the first target trades before the stop).\n\n"
+    "Tap <b>Details</b> on any signal for the full scorecard."
+)

@@ -90,10 +90,13 @@ def render(symbol: str, res: dict) -> str:
         return head + body
 
     icon = {"ENTRY": "✅", "WAIT": "⏳", "NO TRADE": "🚫"}[dec]
-    label = f"{DIR_NAME[res['direction']]}" if dec == "ENTRY" else dec
     body = f"{icon} <b>{dec}"
     if dec == "ENTRY":
-        body += f" — {label}"
+        body += f" — {DIR_NAME[res['direction']]}"
+    elif dec == "WAIT" and res["direction"]:
+        # A WAIT already knows which way it leans. Hiding that made the reply
+        # look like it had no opinion at all.
+        body += f" — {DIR_NAME[res['direction']]} setup"
     body += "</b>\n"
     body += f"<pre>{html.escape(prob.read_block(res))}</pre>\n"
 
@@ -106,14 +109,22 @@ def render(symbol: str, res: dict) -> str:
     body += "\n"
 
     lv = res["levels"]
-    if dec == "ENTRY" and lv:
-        body += "<b>Trade plan</b>\n<pre>"
-        body += f"Entry  {fmt_price(lv['entry'])}  (market)\n"
+    if lv and dec in ("ENTRY", "WAIT"):
+        body += ("<b>Trade plan</b>\n" if dec == "ENTRY"
+                 else "<b>Provisional plan</b>\n")
+        body += "<pre>"
+        body += (f"Entry  {fmt_price(lv['entry'])}  (market)\n" if dec == "ENTRY"
+                 else f"Entry  {fmt_price(lv['entry'])}  (price now)\n")
         body += f"Stop   {fmt_price(lv['stop'])}  ({lv['risk_points']} pts risk)\n"
         for n, (tp, m) in enumerate(zip(lv["tps"], lv["tp_multiples"]), start=1):
             body += f"TP{n}    {fmt_price(tp)}  ({m}R)\n"
         body += f"Size   {lv['lots']} lots = ${lv['risk_cash']} risk\n"
         body += f"ATR    {lv['atr']} pts</pre>\n"
+        if dec == "WAIT":
+            body += ("<i>Not a live trade. These levels are recomputed from the "
+                     "current price every time you ask, so they move until the "
+                     "setup actually triggers.</i>\n")
+        body += "\n"
     elif lv:
         body += (
             f"<i>If it does trigger: stop would sit near {fmt_price(lv['stop'])}, "

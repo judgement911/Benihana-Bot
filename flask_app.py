@@ -167,6 +167,10 @@ def render(symbol: str, res: dict) -> str:
     out += f"{icon} <b>{dec}"
     if dec == "ENTRY":
         out += f" — {DIR_NAME[res['direction']]}"
+    elif dec == "WAIT" and res["direction"]:
+        # A WAIT already knows which way it leans. Hiding that made the reply
+        # look like it had no opinion at all.
+        out += f" — {DIR_NAME[res['direction']]} setup"
     out += "</b>\n"
     out += f"<pre>{html.escape(prob.read_block(res))}</pre>\n"
 
@@ -179,14 +183,22 @@ def render(symbol: str, res: dict) -> str:
     out += "\n"
 
     lv = res["levels"]
-    if dec == "ENTRY" and lv:
+    if lv and dec in ("ENTRY", "WAIT"):
+        out += ("<b>Trade plan</b>\n" if dec == "ENTRY"
+                else "<b>Provisional plan</b>\n")
         out += "<pre>"
-        out += f"Entry  {lv['entry']:,.2f}  (market)\n"
+        out += (f"Entry  {lv['entry']:,.2f}  (market)\n" if dec == "ENTRY"
+                else f"Entry  {lv['entry']:,.2f}  (price now)\n")
         out += f"Stop   {lv['stop']:,.2f}  ({lv['risk_points']} pts)\n"
         for n, (tp, m) in enumerate(zip(lv["tps"], lv["tp_multiples"]), start=1):
             out += f"TP{n}    {tp:,.2f}  ({m}R)\n"
         out += f"Size   {lv['lots']} lots = ${lv['risk_cash']}\n"
         out += f"ATR    {lv['atr']} pts</pre>\n"
+        if dec == "WAIT":
+            out += ("<i>Not a live trade. These levels are recomputed from the "
+                    "current price every time you ask, so they move until the "
+                    "setup actually triggers.</i>\n")
+        out += "\n"
     elif lv:
         out += f"<i>If it triggers, stop would sit near {lv['stop']:,.2f}.</i>\n\n"
 

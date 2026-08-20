@@ -20,7 +20,7 @@ from flask import Flask, jsonify, request
 
 import config as C
 from strategy import DIR_NAME, evaluate
-from yahoo_data import DataError, fetch_ohlc
+from market_data import DataError, fetch_ohlc
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("signalbot")

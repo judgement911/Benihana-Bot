@@ -36,7 +36,12 @@ ALLOWED_USER_IDS = {
 # ---------------------------------------------------------------- risk config
 ACCOUNT_BALANCE = float(_get("ACCOUNT_BALANCE", "5000"))
 RISK_PCT = float(_get("RISK_PCT", "1.0"))          # % of balance per trade
-CONTRACT_SIZE = float(_get("CONTRACT_SIZE", "100"))  # oz per 1.00 lot XAUUSD
+CONTRACT_SIZE = float(_get("CONTRACT_SIZE", "100"))
+
+# ---------------------------------------------------------------- data source
+DATA_PROVIDER = _get("DATA_PROVIDER", "binance").lower()
+OANDA_TOKEN = _get("OANDA_TOKEN")
+OANDA_ENV = _get("OANDA_ENV", "practice")  # oz per 1.00 lot XAUUSD
 
 # ---------------------------------------------------------------- symbol map
 SYMBOL_ALIASES = {

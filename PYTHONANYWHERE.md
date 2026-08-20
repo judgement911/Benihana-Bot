@@ -6,9 +6,10 @@ pinger — better than the Render setup would have been.
 
 **What changed from the original build:**
 
-- Data now comes from **Yahoo Finance** instead of Twelve Data. PythonAnywhere's free
-  tier only allows outbound connections to an approved list, and `.yahoo.com` is on it
-  while Twelve Data isn't. Bonus: no API key needed at all.
+- Data comes from **Binance (PAXG/USDT)** by default — a token redeemable for physical
+  gold, no signup and no API key. Yahoo is on PythonAnywhere's allowlist but permanently
+  refuses their shared IPs with HTTP 429, so it can't be used here.
+- If you want **true XAU/USD** instead, switch to OANDA — see "Better prices" below.
 - The bot uses **plain `requests`** instead of the python-telegram-bot library, so
   there's nothing to `pip install` — PythonAnywhere ships Flask, pandas, numpy and
   requests already.
@@ -21,8 +22,8 @@ pinger — better than the Render setup would have been.
 Upload these to your `Benihana-Bot` repo the same way as before:
 
 ```
-flask_app.py  yahoo_data.py  set_webhook.py
-pa_config_example.py  config.py  PYTHONANYWHERE.md  .gitignore
+flask_app.py  market_data.py  set_webhook.py  check_sources.py
+pa_config_example.py  config.py  PYTHONANYWHERE.md
 ```
 
 `config.py` replaces the existing one. The others are new.
@@ -137,13 +138,43 @@ running it ten times in a row.
 **One worker.** Commands queue rather than running in parallel. Send one, wait for the
 reply, send the next.
 
-**Yahoo prices are not your broker's prices.** It quotes spot gold (`XAUUSD=X`, falling
-back to `GC=F` futures). Your broker's feed will differ by a few cents to a few dollars,
-and it doesn't model your spread. For scalping especially, compare your broker's typical
-gold spread against the ATR figure the bot reports before trusting a 1R target.
+**PAXG is not XAUUSD.** PAXG is a gold-backed token that tracks spot closely but not
+exactly, and it trades 24/7 — including weekends, when real gold is closed. Trend,
+momentum and structure read fine off it. Exact entry and stop levels will be a few
+dollars off what your broker quotes. For scalping that gap matters; see below.
 
-**Yahoo throttles.** Hit it too fast and you'll see a rate-limit message. Responses are
-cached — 3 minutes for 15m candles, longer for higher timeframes — so normal use is fine.
+**No spread is modelled anywhere.** Compare your broker's typical gold spread against
+the ATR figure the bot reports before trusting a 1R target.
+
+---
+
+## Better prices: switching to OANDA
+
+OANDA is a real forex broker, `.oanda.com` is on the allowlist, and their API serves
+true XAU/USD candles. A practice account is free and takes a few minutes.
+
+1. Sign up at **oanda.com** for a free **practice** (demo) account
+2. In the account portal: **Manage API Access** → **Generate** a personal access token
+3. Edit `pa_config.py`:
+   ```python
+   DATA_PROVIDER = "oanda"
+   OANDA_TOKEN = "your-token-here"
+   OANDA_ENV = "practice"
+   ```
+4. Web tab → **Reload**
+
+Prices then match a real broker's gold feed, and weekend candles disappear because the
+market genuinely closes. Everything else works identically.
+
+## Checking what your server can reach
+
+```bash
+python3 check_sources.py
+```
+
+Prints which data sources respond from PythonAnywhere. Useful if a provider starts
+failing — a 401 means reachable-but-needs-a-token, a 403 means not allowlisted, a 429
+means the IP is refused.
 
 ---
 
@@ -154,6 +185,7 @@ cached — 3 minutes for 15m candles, longer for higher timeframes — so normal
 | Site shows "Something went wrong" | Web tab → Error log. Usually a typo in the WSGI file path |
 | Bot silent | `python3 set_webhook.py info` — check `last_error_message` |
 | `TELEGRAM_BOT_TOKEN is empty` | `pa_config.py` missing or in the wrong folder |
-| `Cannot connect to ...` | That domain isn't allowlisted. Tell me which one |
+| `Cannot connect to ...` | That domain isn't allowlisted. Run `check_sources.py` |
+| `rate limiting` / 429 | That provider refuses cloud IPs. Switch DATA_PROVIDER |
 | setWebhook rejected | Reload the web app first, then retry. If it still refuses, tell me — there's a workaround |
 | "No data" on weekends | Gold closes Friday ~21:00 UTC to Sunday ~22:00 UTC |

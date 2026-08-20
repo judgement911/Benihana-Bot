@@ -16,6 +16,16 @@ WEBHOOK_SECRET = "pick-something-random-here-9f3k2"
 # Leave as "" while testing.
 ALLOWED_USER_IDS = ""
 
+# Where price data comes from.
+#   "binance" — PAXG/USDT gold token. No signup, works immediately.
+#   "oanda"   — true XAU/USD from a real broker. Needs the two settings below.
+DATA_PROVIDER = "binance"
+
+# Only needed if DATA_PROVIDER = "oanda".
+# Free practice account at oanda.com -> Manage API Access -> generate token.
+OANDA_TOKEN = ""
+OANDA_ENV = "practice"
+
 # Used only for position-size maths. No money moves.
 ACCOUNT_BALANCE = "5000"
 RISK_PCT = "1.0"

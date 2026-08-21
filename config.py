@@ -208,6 +208,19 @@ JOURNAL_MAX_ENTRIES = int(_get("JOURNAL_MAX_ENTRIES", "2000"))
 # Bars after entry to wait before giving up on a signal that never resolved.
 JOURNAL_MAX_BARS = int(_get("JOURNAL_MAX_BARS", "120"))
 
+# ------------------------------------------------------------------ backtest
+# 1200 bars of 15min is twelve days, and the 4h bias needs 960 of them before
+# it even has 60 candles to read — so the old budget evaluated a couple of
+# hundred bars and produced two trades, permanently under the calibration
+# minimum. /backtest calibrate could not have worked at that size.
+#
+# 2500 bars is ~26 days and yields enough trades to calibrate, at roughly 25
+# CPU-seconds. That matters: a free PythonAnywhere account gets 100 a day, and
+# a webhook has about 60 seconds before Telegram gives up and retries. For a
+# deeper sample run backtest.py from a console, where neither limit applies.
+BACKTEST_BARS = int(_get("BACKTEST_BARS", "2500"))
+BACKTEST_BARS_CLI = int(_get("BACKTEST_BARS_CLI", "5000"))
+
 # ---------------------------------------------------------------- calibration
 # Written by:  python backtest.py --mode intraday --csv FILE --calibrate
 CALIBRATION_FILE = _get("CALIBRATION_FILE") or os.path.join(

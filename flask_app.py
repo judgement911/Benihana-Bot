@@ -239,9 +239,10 @@ def do_backtest(chat_id: int, symbol_key: str, mode: str, calibrate: bool = Fals
         from backtest import build_calibration, write_calibration
         from backtest import run as backtest_run
 
-        # Deliberately modest: a free PythonAnywhere account gets 100 CPU-seconds
-        # a day, and this is the only thing here that eats a real share of them.
-        df = fetch_ohlc(symbol, spec.entry_tf, 1200)
+        # A free PythonAnywhere account gets 100 CPU-seconds a day and Telegram
+        # gives a webhook about 60 seconds, so this is the one command here that
+        # has to be sized against both. See config.BACKTEST_BARS.
+        df = fetch_ohlc(symbol, spec.entry_tf, C.BACKTEST_BARS)
         stats, report = backtest_run(df, mode)
         text = (f"<b>{symbol} {mode} backtest</b>\n{len(df)} × {spec.entry_tf} bars\n"
                 f"<pre>{html.escape(report)}</pre>")
@@ -249,8 +250,11 @@ def do_backtest(chat_id: int, symbol_key: str, mode: str, calibrate: bool = Fals
         if calibrate:
             trades = stats.get("trade_log") or []
             if len(trades) < C.CALIBRATION_MIN_TRADES:
-                text += (f"\nNot calibrated: {len(trades)} trades is under the "
-                         f"{C.CALIBRATION_MIN_TRADES}-trade minimum.")
+                text += (f"\n⚠️ Not calibrated: {len(trades)} trades is under the "
+                         f"{C.CALIBRATION_MIN_TRADES}-trade minimum. This window "
+                         f"was too quiet. For a bigger sample run it from a "
+                         f"console:\n<code>python3 backtest.py --mode {mode} "
+                         f"--live --calibrate</code>")
             else:
                 entry = build_calibration(trades, mode, symbol, len(df), "telegram")
                 write_calibration(entry, mode, symbol)

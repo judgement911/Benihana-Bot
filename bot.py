@@ -240,7 +240,7 @@ async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     loop = asyncio.get_running_loop()
     try:
-        df = await loop.run_in_executor(None, fetch_ohlc, symbol, spec.entry_tf, 5000)
+        df = await loop.run_in_executor(None, fetch_ohlc, symbol, spec.entry_tf, C.BACKTEST_BARS_CLI)
         stats, report = await loop.run_in_executor(None, backtest_run, df, mode)
         header = f"<b>{inst.display} {mode} backtest</b>\n{len(df)} × {spec.entry_tf} bars\n"
         text = header + f"<pre>{html.escape(report)}</pre>"

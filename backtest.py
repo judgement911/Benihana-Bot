@@ -51,6 +51,10 @@ def run(entry_df: pd.DataFrame, mode: str, window: int = 500) -> tuple:
     spec = C.MODES[mode]
     trend_full = resample_ohlc(entry_df, RESAMPLE_RULE[spec.trend_tf])
     bias_full = resample_ohlc(entry_df, RESAMPLE_RULE[spec.bias_tf])
+    # Cut the higher timeframes by binary search on the index. Masking with
+    # `frame.index <= now` scans the whole frame once per bar, which is what
+    # made a 5000-bar run cost twenty times a 1200-bar one instead of four.
+    trend_idx, bias_idx = trend_full.index, bias_full.index
 
     trades = []
     open_trade = None
@@ -93,8 +97,10 @@ def run(entry_df: pd.DataFrame, mode: str, window: int = 500) -> tuple:
 
         # ---- evaluate using only closed data up to and including bar i -----
         e_slice = entry_df.iloc[max(0, i - window) : i + 1]
-        t_slice = trend_full[trend_full.index <= now].tail(300)
-        b_slice = bias_full[bias_full.index <= now].tail(300)
+        t_end = trend_idx.searchsorted(now, side="right")
+        b_end = bias_idx.searchsorted(now, side="right")
+        t_slice = trend_full.iloc[max(0, t_end - 300):t_end]
+        b_slice = bias_full.iloc[max(0, b_end - 300):b_end]
         if len(t_slice) < 60 or len(b_slice) < 60:
             continue
 
@@ -301,7 +307,7 @@ def main() -> None:
     p.add_argument("--csv", help="broker-exported OHLC on the entry timeframe")
     p.add_argument("--live", action="store_true", help="pull history from Twelve Data")
     p.add_argument("--symbol", default="XAU/USD")
-    p.add_argument("--bars", type=int, default=5000)
+    p.add_argument("--bars", type=int, default=C.BACKTEST_BARS_CLI)
     p.add_argument(
         "--calibrate",
         action="store_true",

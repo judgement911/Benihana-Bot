@@ -105,24 +105,26 @@ def format_scan(result: dict, limit: int = 12) -> str:
             out += f"{dot} <b>{inst.display}</b> — {tag} — {conf}%\n"
 
         lv = res.get("levels")
-        if lv and dec == "ENTRY":
-            out += (f"       entry {inst.fmt(lv['entry'])} · "
-                    f"sl {inst.fmt(lv['stop'])} · "
-                    f"tp {inst.fmt(lv['tps'][0])}\n")
+        if lv and dec in ("ENTRY", "WAIT"):
+            order = (res.get("order") or {}).get("label", "")
+            out += f"      📍 {inst.fmt(lv['entry'])}"
+            out += f" · {order}" if order else ""
+            out += (f"\n      🛑 {inst.fmt(lv['stop'])}"
+                    f" · 🎯 {inst.fmt(lv['tps'][0])}\n")
 
     best = tradeable(rows)
     if best:
         b = best[0]
         inst = I.BY_KEY.get(b["instrument"], I.GOLD)
         pr = b.get("probability")
-        out += "\n<b>Best setup</b>\n"
+        out += "\n🏆 <b>Best setup</b>\n"
         out += f"{inst.display} {DIR_NAME[b['direction']]}\n"
-        out += f"Confidence: {(b.get('confidence') or {}).get('value')}%\n"
+        out += f"📊 Confidence: {(b.get('confidence') or {}).get('value')}%\n"
         if pr:
-            out += (f"Odds: {pr['targets'][0]['p']:.0%} to TP1 · "
+            out += (f"🎲 Odds: {pr['targets'][0]['p']:.0%} to TP1 · "
                     f"Exp {pr['expectancy_r']:+.2f}R\n")
-        out += f"RR: 1:{max(b['levels']['tp_multiples']):g}\n"
-        out += f"TF: {b['timeframes']['entry']}\n"
+        out += f"⚖️ RR: 1:{max(b['levels']['tp_multiples']):g}\n"
+        out += f"🕐 TF: {b['timeframes']['entry']}\n"
     else:
         out += "\n<i>No ENTRY anywhere in this sweep. That is a normal result.</i>\n"
 

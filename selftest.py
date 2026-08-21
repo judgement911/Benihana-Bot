@@ -1,7 +1,7 @@
 """Offline sanity check — no API key needed. Run: python selftest.py"""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import numpy as np
 import pandas as pd
@@ -297,8 +297,14 @@ def check_journal() -> bool:
     import journal as J
     importlib.reload(J)
 
+    # Timestamps are relative to now, never hardcoded. resolve() measures a
+    # signal's age against the clock and expires anything older than
+    # JOURNAL_MAX_BARS, so a fixed date makes the "still open" case start
+    # failing the moment real time drifts past that deadline.
+    t0 = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=30)
+
     def row(**kw):
-        base = dict(id="t", ts="2026-08-20T10:00:00+00:00", instrument="xauusd",
+        base = dict(id="t", ts=t0.isoformat(), instrument="xauusd",
                     mode="scalp", entry_tf="5min", direction=1, entry=4500.0,
                     stop=4490.0, tps=[4510.0, 4520.0], tp_multiples=[1.0, 2.0],
                     score=75, confidence=60, p_tp1=0.55, outcome="open",
@@ -307,7 +313,7 @@ def check_journal() -> bool:
         return base
 
     def bars(seq):
-        idx = pd.date_range("2026-08-20T10:05:00Z", periods=len(seq),
+        idx = pd.date_range(t0 + timedelta(minutes=5), periods=len(seq),
                             freq="5min", tz="UTC")
         return pd.DataFrame(
             [{"open": o, "high": h, "low": l, "close": c} for o, h, l, c in seq],

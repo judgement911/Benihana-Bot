@@ -66,23 +66,28 @@ def _subhead(res: dict, with_price: bool) -> str:
     return " · ".join(bits)
 
 
-def _levels_block(res: dict, live: bool) -> str:
-    """The part people actually came for."""
+def _levels_lines(res: dict, live: bool) -> str:
+    """The levels as ordinary text.
+
+    These used to sit in a <pre> block, which Telegram renders as a code box
+    with a copy button hanging off the corner — it looked like debug output
+    rather than a trade. Plain text costs the column alignment, since the
+    chat font is proportional, so each row labels itself instead of relying
+    on position.
+    """
     lv = res["levels"]
     inst = _inst(res)
     order = res.get("order") or {}
     entry_note = order.get("label") or ("market" if live else "price now")
     if order.get("kind") == "market":
-        entry_note = "market"
-    rows = [("Entry", lv["entry"], entry_note),
-            ("Stop Loss", lv["stop"],
-             lv.get("risk_display") or f"{lv['risk_points']} pts")]
+        entry_note = "at market"
+
+    lines = [f"📍 Entry <b>{_e(_p(lv['entry'], inst))}</b> · {_e(entry_note)}",
+             f"🛑 Stop <b>{_e(_p(lv['stop'], inst))}</b> · "
+             f"{_e(lv.get('risk_display') or lv['risk_points'])}"]
     for n, (tp, m) in enumerate(zip(lv["tps"], lv["tp_multiples"]), start=1):
-        rows.append((f"TP {n}", tp, f"{m:g}R"))
-    width = max(len(r[0]) for r in rows)
-    money = max(len(_p(v, inst)) for _, v, _ in rows)
-    return "\n".join(f"{name:<{width}}  {_p(val, inst):>{money}}  {note}"
-                      for name, val, note in rows)
+        lines.append(f"🎯 TP{n} <b>{_e(_p(tp, inst))}</b> · {m:g}R")
+    return "\n".join(lines)
 
 
 def _headline_numbers(res: dict) -> str:
@@ -112,9 +117,9 @@ def _compact(symbol: str, res: dict) -> str:
 
     if res["vetoes"]:
         out = f"🚫 <b>NO TRADE · {_e(symbol)}</b>\n"
-        out += f"<i>{_e(_subhead(res, with_price=True))}</i>\n\n"
+        out += f"🕐 {_e(_subhead(res, with_price=True))}\n\n"
         for v in res["vetoes"][:2]:
-            out += f"{_e(v)}\n"
+            out += f"• {_e(v)}\n"
         return out
 
     direction = DIR_NAME[res["direction"]] if res["direction"] else ""
@@ -125,36 +130,33 @@ def _compact(symbol: str, res: dict) -> str:
         out = f"⏳ <b>WAIT · {_e(direction)} setup · {_e(symbol)}</b>\n"
     else:
         out = f"🚫 <b>NO TRADE · {_e(symbol)}</b>\n"
+
     lv = res["levels"]
     has_plan = bool(lv) and dec in ("ENTRY", "WAIT")
-    out += f"<i>{_e(_subhead(res, with_price=not has_plan))}</i>\n\n"
+    out += f"🕐 {_e(_subhead(res, with_price=not has_plan))}\n\n"
 
     if has_plan:
-        out += f"<pre>{_e(_levels_block(res, live=dec == 'ENTRY'))}</pre>\n"
+        out += _levels_lines(res, live=dec == "ENTRY") + "\n\n"
         rr = max(lv["tp_multiples"])
-        if lv.get("lots") is None:
-            # A cross pays out in a currency we have no USD rate for. The R
-            # multiples still hold; only the lot size is unknowable here.
-            out += f"<i>Size it yourself — {_e(_inst(res).quote)} payout</i> · 1:{rr:g} R:R\n"
-        else:
-            out += (f"<b>{lv['lots']} lots</b> · {_cash(lv['risk_cash'])} risk "
-                    f"· 1:{rr:g} R:R\n")
+        size = (f"<b>{lv['lots']} lots</b> · " if lv.get("lots") is not None
+                else "")
+        out += f"💰 {size}{_cash(lv['risk_cash'])} risk · 1:{rr:g} R:R\n"
 
     nums = _headline_numbers(res)
     if nums:
-        out += nums + "\n"
+        out += f"📊 {nums}\n"
 
     order = res.get("order") or {}
     if dec != "ENTRY":
         needs = _needs(res)
         if needs:
-            out += f"<i>Needs: {_e(needs)}</i>\n"
+            out += f"🔍 Needs: {_e(needs)}\n"
     if dec == "WAIT" and order.get("note"):
-        note = order['note']
-        out += (f"<i>{_e(note[0].upper() + note[1:])}. "
+        note = order["note"]
+        out += (f"ℹ️ <i>{_e(note[0].upper() + note[1:])}. "
                 f"Levels move until it fills.</i>\n")
     elif dec == "WAIT":
-        out += "<i>Not live — levels move until it triggers.</i>\n"
+        out += "ℹ️ <i>Not live — levels move until it triggers.</i>\n"
 
     if res.get("news_warning"):
         out += "\n⚠️ <i>High-impact US data often lands this hour.</i>\n"
@@ -203,21 +205,16 @@ def _verbose(symbol: str, res: dict) -> str:
     lv = res["levels"]
     if lv and dec in ("ENTRY", "WAIT"):
         out += ("<b>Trade plan</b>\n" if dec == "ENTRY" else "<b>Provisional plan</b>\n")
+        out += _levels_lines(res, live=dec == "ENTRY") + "\n"
         o = res.get("order") or {}
-        if o.get("label"):
-            out += f"<b>{_e(o['label'])}</b>"
-            if o.get("kind") != "market":
-                out += f" @ {_e(_p(o['price'], _inst(res)))}"
-            out += f"\n<i>{_e(o.get('note', ''))}</i>\n"
-        out += f"<pre>{_e(_levels_block(res, live=dec == 'ENTRY'))}\n"
-        size = (f"{lv['lots']:>10} lots = {_cash(lv['risk_cash'])}" if lv.get("lots") is not None
-                else f"{'—':>10} (cross pair, size it yourself)")
-        out += f"{'Size':<9}  {size}\n"
-        out += f"{'ATR':<9}  {lv['atr']:>10} pts\n"
-        pct = lv.get("risk_pct")
-        atr_x = lv.get("stop_atr")
-        out += (f"{'Stop is':<9}  {atr_x:>10} x ATR"
-                + (f", {pct}% of price" if pct else "") + "</pre>\n")
+        if o.get("note"):
+            out += f"<i>{_e(o['note'])}</i>\n"
+        if lv.get("lots") is not None:
+            out += f"💰 Size {lv['lots']} lots = {_cash(lv['risk_cash'])}\n"
+        out += f"📐 ATR {lv['atr']} · stop {lv.get('stop_atr')}x ATR"
+        if lv.get("risk_pct"):
+            out += f", {lv['risk_pct']}% of price"
+        out += "\n"
         if lv.get("stop_clamped"):
             out += ("<i>Stop capped at the mode's ceiling — the structural swing "
                     "sat further away than this timeframe justifies.</i>\n")

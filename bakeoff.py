@@ -24,16 +24,40 @@ The score here deliberately refuses to reward that alone:
     worked only in the first month scores below something that worked in
     both
 
+IT RUNS IN BATCHES, BECAUSE IT HAS TO
+-------------------------------------
+Ten backtests cost roughly 190 CPU-seconds. A free PythonAnywhere account
+gets 100 a day, so the whole thing in one go would be killed halfway and
+leave you nothing. Results accumulate into a JSON file instead, so you can
+run a few candidates a day and rank them once they are all in:
+
+    python3 bakeoff.py --live --resume --budget 80     # day one
+    python3 bakeoff.py --live --resume --budget 80     # day two, the rest
+    python3 bakeoff.py --report                        # the table
+
+--budget stops starting new candidates once the estimate says the next one
+would not finish inside the allowance. On a paid plan or your own machine,
+drop it and run the lot.
+
 WHAT IT WILL NOT DO
 -------------------
 It will not invent numbers. If the data is too short, too coarse, or the
 provider will not serve it, this prints why and exits non-zero. An
 unvalidated strategy stays unvalidated; that is a fact about your data, not
 a problem to be smoothed over with a plausible-looking table.
+
+A partial table says which candidates are still missing. Ranking six of ten
+and calling it a winner would be exactly the kind of quiet overreach the
+scoring above is designed to avoid.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
+import json
+import os
+import resource
 import sys
 
 import pandas as pd
@@ -43,6 +67,29 @@ import config as C
 from backtest import run as backtest_run
 
 MIN_TRADES = 20            # below this a result is reported but not ranked
+RESULTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "bakeoff_results.json")
+
+
+def _cpu() -> float:
+    r = resource.getrusage(resource.RUSAGE_SELF)
+    return r.ru_utime + r.ru_stime
+
+
+def load_results(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_results(path: str, data: dict) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=1, sort_keys=True)
+    os.replace(tmp, path)
 
 
 def _metrics(trades: list[dict]) -> dict:
@@ -91,23 +138,63 @@ def _score(m: dict) -> float:
     return (exp * 100.0) + (pf * 8.0) - (dd * 4.0) + (consistency * 15.0)
 
 
-def run_bakeoff(entry_df: pd.DataFrame, mode: str) -> list[tuple[str, dict]]:
-    results = []
-    for key, meta in CAND.CANDIDATES.items():
+def run_bakeoff(entry_df: pd.DataFrame, mode: str, only=None, done=None,
+                budget: float = None, log=print) -> dict:
+    """Backtest the requested candidates, respecting a CPU budget.
+
+    Returns {key: metrics}. Anything already in `done` is skipped, and once
+    the elapsed CPU plus one more candidate's estimate would exceed
+    `budget`, it stops rather than being killed mid-run by the host.
+    """
+    done = dict(done or {})
+    todo = [k for k in (only or CAND.CANDIDATES)
+            if k in CAND.CANDIDATES and k not in done]
+    if not todo:
+        return done
+
+    started = _cpu()
+    per_candidate = None
+    for key in todo:
+        if budget and per_candidate:
+            spent = _cpu() - started
+            if spent + per_candidate > budget:
+                log(f"  stopping: {spent:.0f}s spent, the next candidate needs "
+                    f"about {per_candidate:.0f}s and the budget is {budget:.0f}s. "
+                    f"Re-run with --resume to continue.")
+                break
+
+        meta = CAND.CANDIDATES[key]
+        t0 = _cpu()
         try:
-            stats, _ = backtest_run(entry_df, mode, strategy=meta["fn"])
+            # backtest_run narrates a full report per candidate. Ten of those
+            # bury the comparison this script exists to print.
+            with contextlib.redirect_stdout(io.StringIO()):
+                stats, _ = backtest_run(entry_df, mode, strategy=meta["fn"])
             m = _metrics(stats.get("trade_log") or [])
         except Exception as exc:                    # noqa: BLE001
             m = {"trades": 0, "error": f"{type(exc).__name__}: {exc}"}
+        cost = _cpu() - t0
+        per_candidate = cost if per_candidate is None else max(per_candidate, cost)
+
         m["name"] = meta["name"]
         m["idea"] = meta["idea"]
         m["score"] = _score(m)
-        results.append((key, m))
-    results.sort(key=lambda kv: kv[1]["score"], reverse=True)
-    return results
+        m["cpu_seconds"] = round(cost, 1)
+        done[key] = m
+        log(f"  {meta['name']:<17} {m.get('trades', 0):>4} trades  "
+            f"{cost:.0f}s CPU")
+    return done
+
+
+def ranked(done: dict) -> list[tuple[str, dict]]:
+    out = [(k, v) for k, v in done.items()]
+    out.sort(key=lambda kv: kv[1].get("score", float("-inf")), reverse=True)
+    return out
 
 
 def format_table(results, bars: int, mode: str) -> str:
+    missing = [CAND.CANDIDATES[k]["name"] for k in CAND.CANDIDATES
+               if k not in dict(results)]
     out = [f"BAKE-OFF — {mode}, {bars} bars", ""]
     out.append(f"{'strategy':<17}{'n':>5}{'win':>7}{'PF':>7}{'net R':>8}"
                f"{'avg R':>8}{'maxDD':>8}  consistent")
@@ -125,7 +212,13 @@ def format_table(results, bars: int, mode: str) -> str:
                    f"{'yes' if m['consistent'] else 'no':<4}{flag}")
     out.append("")
 
-    rankable = [r for r in results if r[1]["score"] != float("-inf")]
+    if missing:
+        out.append(f"NOT YET RUN ({len(missing)}): " + ", ".join(missing))
+        out.append("Re-run with --resume to finish. The ranking below is "
+                   "partial until they are all in.")
+        out.append("")
+
+    rankable = [r for r in results if r[1].get("score", float("-inf")) != float("-inf")]
     if not rankable:
         out.append(f"NOTHING IS RANKABLE. Every candidate produced fewer than "
                    f"{MIN_TRADES} trades on this sample, which is too few to "
@@ -151,7 +244,25 @@ def main() -> int:
     p.add_argument("--live", action="store_true", help="pull history from the provider")
     p.add_argument("--symbol", default="XAU/USD")
     p.add_argument("--bars", type=int, default=C.BACKTEST_BARS_CLI)
+    p.add_argument("--only", help="comma-separated candidate keys")
+    p.add_argument("--resume", action="store_true",
+                   help="skip candidates already in the results file")
+    p.add_argument("--budget", type=float,
+                   help="stop before exceeding this many CPU-seconds")
+    p.add_argument("--out", default=RESULTS_FILE)
+    p.add_argument("--report", action="store_true",
+                   help="print the table from saved results and exit")
     args = p.parse_args()
+
+    if args.report:
+        done = load_results(args.out)
+        if not done:
+            print(f"No saved results at {args.out}. Run the bake-off first.",
+                  file=sys.stderr)
+            return 1
+        print(format_table(ranked(done), done.get("_bars", 0),
+                           done.get("_mode", args.mode)))
+        return 0
 
     spec = C.MODES[args.mode]
     if args.csv:
@@ -170,8 +281,24 @@ def main() -> int:
               f"be noise wearing a suit. Get more data.", file=sys.stderr)
         return 1
 
-    results = run_bakeoff(df, args.mode)
-    print(format_table(results, len(df), args.mode))
+    saved = load_results(args.out) if args.resume else {}
+    saved.pop("_bars", None)
+    saved.pop("_mode", None)
+    only = [k.strip() for k in args.only.split(",")] if args.only else None
+
+    todo = len([k for k in (only or CAND.CANDIDATES) if k not in saved])
+    print(f"Running {todo} candidate(s) over {len(df)} bars. "
+          f"Roughly {todo * 19} CPU-seconds; a free PythonAnywhere account "
+          f"gets 100 a day.\n")
+
+    done = run_bakeoff(df, args.mode, only=only, done=saved, budget=args.budget)
+    done["_bars"], done["_mode"] = len(df), args.mode
+    save_results(args.out, done)
+    done.pop("_bars"); done.pop("_mode")
+
+    print()
+    print(format_table(ranked(done), len(df), args.mode))
+    print(f"\nSaved to {args.out}")
     return 0
 
 

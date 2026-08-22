@@ -24,3 +24,7 @@ bakeoff_results.json
 # Local scratch
 *.log
 *.csv
+
+# ...except downloaded history, which exists precisely to be
+# committed so a machine with spare CPU can backtest it.
+!data/*.csv

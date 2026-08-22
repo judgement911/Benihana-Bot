@@ -3,3 +3,7 @@ pandas>=2.2
 numpy>=1.26
 requests>=2.32
 python-dotenv>=1.0
+
+# Development only — ships the real EUR/USD sample realcheck.py uses.
+# The bot itself does not import it.
+backtesting>=0.3

@@ -60,6 +60,36 @@ def load(path: str) -> pd.DataFrame:
     return df[need].dropna()
 
 
+MIN_SIDE_TRADES = 10       # below this, a side's expectancy is noise
+
+
+def _direction(trades: list[dict]) -> dict:
+    """Split a result by trade direction.
+
+    Every finding in this project has turned on this. A strategy that only
+    ever went long in a rising market looks identical to one with an edge
+    until you separate the two, and four of the best-looking results here
+    were exactly that.
+
+    The verdict needs a minimum count PER SIDE. Calling something two-sided
+    off two short trades is how a one-sided result sneaks through wearing
+    the label that was supposed to catch it.
+    """
+    L = [t["r"] for t in trades if t["dir"] > 0]
+    S = [t["r"] for t in trades if t["dir"] < 0]
+    eL = sum(L) / len(L) if L else None
+    eS = sum(S) / len(S) if S else None
+    if not S:
+        verdict = "no shorts"
+    elif len(L) < MIN_SIDE_TRADES or len(S) < MIN_SIDE_TRADES:
+        verdict = "one side thin"
+    elif eL > 0 and eS > 0:
+        verdict = "YES"
+    else:
+        verdict = "no"
+    return {"nL": len(L), "nS": len(S), "eL": eL, "eS": eS, "two_sided": verdict}
+
+
 def sweep(df: pd.DataFrame, mode: str, log=print) -> list[dict]:
     rows = []
     for key in ORDER:
@@ -68,7 +98,9 @@ def sweep(df: pd.DataFrame, mode: str, log=print) -> list[dict]:
                 with contextlib.redirect_stdout(io.StringIO()):
                     stats, _ = backtest_run(df, mode, strategy=REGISTRY[key].evaluate,
                                             tp_multiples=tps)
-                m = _metrics(stats.get("trade_log") or [])
+                tl = stats.get("trade_log") or []
+                m = _metrics(tl)
+                m.update(_direction(tl))
             except Exception as exc:                # noqa: BLE001
                 m = {"trades": 0, "error": f"{type(exc).__name__}: {exc}"}
             m.update(strategy=key, name=REGISTRY[key].name, mode=mode, rr=rr_label)
@@ -81,8 +113,8 @@ def sweep(df: pd.DataFrame, mode: str, log=print) -> list[dict]:
 
 def table(rows: list[dict]) -> str:
     out = [f"{'strategy':<16}{'mode':<10}{'R:R':<6}{'n':>5}{'win':>7}"
-           f"{'PF':>7}{'exp R':>8}{'net R':>8}{'maxDD':>8}  ok"]
-    out.append("-" * 82)
+           f"{'PF':>7}{'exp R':>8}{'maxDD':>8}{'long':>6}{'short':>6}  two-sided"]
+    out.append("-" * 92)
     for m in sorted(rows, key=lambda r: -r.get("score", float("-inf"))):
         if not m.get("trades"):
             out.append(f"{m['name']:<16}{m['mode']:<10}{m['rr']:<6}{'0':>5}   "
@@ -91,20 +123,26 @@ def table(rows: list[dict]) -> str:
         pf = "inf" if m["profit_factor"] == float("inf") else f"{m['profit_factor']:.2f}"
         out.append(f"{m['name']:<16}{m['mode']:<10}{m['rr']:<6}{m['trades']:>5}"
                    f"{m['win_rate']:>6.0%}{pf:>7}{m['expectancy']:>+8.2f}"
-                   f"{m['net_r']:>+8.1f}{m['max_dd_r']:>+8.1f}  "
-                   + ("yes" if m["trades"] >= MIN_TRADES else "few"))
+                   f"{m['max_dd_r']:>+8.1f}{m.get('nL', 0):>6}{m.get('nS', 0):>6}"
+                   f"  {m.get('two_sided', '?')}")
     return "\n".join(out)
 
 
 def verdict(rows: list[dict]) -> str:
-    rankable = [r for r in rows if r.get("trades", 0) >= MIN_TRADES]
+    # A one-sided result in a trending sample measures the trend, so it is
+    # reported in the table but never ranked or recommended.
+    rankable = [r for r in rows if r.get("trades", 0) >= MIN_TRADES
+                and r.get("two_sided") == "YES"]
     if not rankable:
-        return ("\nNOTHING IS RANKABLE. Every combination produced fewer than "
-                f"{MIN_TRADES} trades, which cannot show an edge. More history "
-                "is the only fix — this is an absence of evidence, not a result.")
+        return ("\nNOTHING IS RANKABLE. No combination both cleared "
+                f"{MIN_TRADES} trades and made money in both directions. "
+                "That is the finding: on this sample nothing here is "
+                "distinguishable from riding the prevailing trend.")
     out = ["", "Ranked on expectancy after costs, under the partial-exit plan",
-           "the bot actually trades. Combinations under "
-           f"{MIN_TRADES} trades are excluded.", ""]
+           "the bot actually trades. Excluded: fewer than "
+           f"{MIN_TRADES} trades, or not profitable on BOTH sides with at",
+           f"least {MIN_SIDE_TRADES} trades each — a strategy that only went",
+           "long in a rising market has measured the market, not itself.", ""]
     best = sorted(rankable, key=lambda r: -r["score"])[:5]
     for n, m in enumerate(best, start=1):
         out.append(f"  {n}. {m['name']} · {m['mode']} · {m['rr']} — "

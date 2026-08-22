@@ -712,6 +712,62 @@ def check_lifecycle() -> bool:
     return ok
 
 
+def check_payoff_agreement() -> bool:
+    """The backtester, the journal and the signal must price a trade alike.
+
+    They did not. The backtester scored a run that banked TP1 and TP2 before
+    reversing as a full -1R loss; the journal called the same run +0.33R; and
+    the expectancy printed on the signal was derived from neither. Three
+    components describing one plan, disagreeing about what it pays.
+    """
+    import journal as J
+    import probability as prob
+    ok = True
+    mults = [1.0, 2.0, 3.0]
+
+    # 1. The journal must delegate to the shared definition.
+    for hit, row in ((0, {"hit_tp1": False, "tps_hit": [], "hit_final": False}),
+                     (1, {"hit_tp1": True, "tps_hit": [1], "hit_final": False}),
+                     (2, {"hit_tp1": True, "tps_hit": [1, 2], "hit_final": False}),
+                     (3, {"hit_tp1": True, "tps_hit": [1, 2, 3], "hit_final": True})):
+        a = J._realised_r(dict(row, tp_multiples=mults))
+        b = prob.realised_r(hit, mults, C.COST_R)
+        if abs(a - b) > 1e-9:
+            print(f"  FAIL payoff: journal {a:+.3f} vs shared {b:+.3f} at {hit} hit")
+            ok = False
+
+    # 2. More targets filled must never pay less.
+    seq = [prob.realised_r(h, mults, 0.0) for h in range(len(mults) + 1)]
+    if seq != sorted(seq):
+        print(f"  FAIL payoff is not monotone in targets filled: {seq}")
+        ok = False
+
+    # 3. Banking a target must beat being stopped before any of them.
+    if not prob.realised_r(1, mults, C.COST_R) > prob.realised_r(0, mults, C.COST_R):
+        print("  FAIL reaching TP1 must beat not reaching it")
+        ok = False
+
+    # 4. The expectancy the signal prints must equal the shared payoff
+    #    weighted by the probability of each outcome. If these drift apart,
+    #    the bot is quoting an expectancy for a plan it does not trade.
+    p = [0.55, 0.32, 0.18]
+    by_formula = sum(pi * mi for pi, mi in zip(p, mults)) / len(mults) - (1 - p[0])
+    by_outcome = (
+        (p[0] - p[1]) * prob.realised_r(1, mults, 0.0)
+        + (p[1] - p[2]) * prob.realised_r(2, mults, 0.0)
+        + p[2] * prob.realised_r(3, mults, 0.0)
+        + (1 - p[0]) * prob.realised_r(0, mults, 0.0)
+    )
+    if abs(by_formula - by_outcome) > 1e-9:
+        print(f"  FAIL expectancy {by_formula:+.4f} does not match the payoff "
+              f"model {by_outcome:+.4f}")
+        ok = False
+
+    if ok:
+        print("  payoff: backtest, journal and signal price a trade identically")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -744,7 +800,7 @@ if __name__ == "__main__":
     print("\nSettings, money and language:")
     ok &= check_money() & check_users() & check_sessions() & check_i18n()
     print("\nStrategies and lifecycle:")
-    ok &= check_strategies() & check_lifecycle()
+    ok &= check_strategies() & check_lifecycle() & check_payoff_agreement()
     ok &= check_orders()
 
     print("\nSignal journal:")

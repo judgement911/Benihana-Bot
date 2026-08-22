@@ -44,6 +44,9 @@ RESAMPLE_RULE = {"5min": "5min", "15min": "15min", "1h": "1h",
                  "4h": "4h", "1day": "1D", "1week": "1W"}
 WARMUP = 260
 
+# Dealing costs charged once per trade, same constant the signal quotes.
+COST_R = C.COST_R
+
 
 def run(entry_df: pd.DataFrame, mode: str, window: int = 500,
         strategy=None) -> tuple:
@@ -68,31 +71,40 @@ def run(entry_df: pd.DataFrame, mode: str, window: int = 500,
         # ---- manage an open position on this bar's range -------------------
         if open_trade:
             d = open_trade["dir"]
-            hit_sl = bar["low"] <= open_trade["sl"] if d == LONG else bar["high"] >= open_trade["sl"]
-            hit_tp = bar["high"] >= open_trade["tp"] if d == LONG else bar["low"] <= open_trade["tp"]
-            hit_tp1 = (
-                bar["high"] >= open_trade["tp1"] if d == LONG
-                else bar["low"] <= open_trade["tp1"]
-            )
+            tps = open_trade["tps"]
+            # The stop moves to entry once the first target fills, exactly as
+            # the signal says it will. Modelling every trade as all-or-nothing
+            # to the last target scored a run that banked TP1 and TP2 before
+            # reversing as a total loss, which is not the trade the bot takes.
+            stop = open_trade["sl_now"]
+            hit_sl = bar["low"] <= stop if d == LONG else bar["high"] >= stop
 
-            # First target is recorded separately because it is what the
-            # signal's headline probability is about. Same pessimism as below:
-            # a bar that touches both is scored as the stop.
-            if hit_tp1 and not hit_sl:
-                open_trade["hit_tp1"] = True
+            newly = [n for n, tp in enumerate(tps, start=1)
+                     if n > open_trade["targets_hit"]
+                     and (bar["high"] >= tp if d == LONG else bar["low"] <= tp)]
 
-            # Pessimistic: if both are touched in one bar, assume the stop first.
+            # Pessimistic, and consistent with the live tracker: a bar that
+            # touches both a target and the stop is scored as the stop.
             if hit_sl:
-                open_trade["r"] = -1.0
                 open_trade["exit"] = now
+                open_trade["r"] = prob.realised_r(
+                    open_trade["targets_hit"], spec.tp_multiples, COST_R)
                 trades.append(open_trade)
                 open_trade = None
-            elif hit_tp:
-                open_trade["r"] = open_trade["target_r"]
-                open_trade["hit_final"] = True
-                open_trade["exit"] = now
-                trades.append(open_trade)
-                open_trade = None
+            elif newly:
+                open_trade["targets_hit"] = max(newly)
+                open_trade["hit_tp1"] = True
+                if C.MOVE_TO_BREAKEVEN_AFTER_TP1:
+                    open_trade["sl_now"] = open_trade["entry"]
+                if open_trade["targets_hit"] >= len(tps):
+                    open_trade["hit_final"] = True
+                    open_trade["exit"] = now
+                    open_trade["r"] = prob.realised_r(
+                        len(tps), spec.tp_multiples, COST_R)
+                    trades.append(open_trade)
+                    open_trade = None
+                else:
+                    continue
             else:
                 continue
 
@@ -120,6 +132,9 @@ def run(entry_df: pd.DataFrame, mode: str, window: int = 500,
             "sl": lv["stop"],
             "tp1": lv["tps"][0],
             "tp": lv["tps"][-1],
+            "tps": list(lv["tps"]),
+            "sl_now": lv["stop"],
+            "targets_hit": 0,
             "target_r": spec.tp_multiples[-1],
             "score": res["score"],
             "confidence": (res.get("confidence") or {}).get("value", 0),

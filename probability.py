@@ -388,6 +388,31 @@ SOURCE_NOTE = {
 }
 
 
+def realised_r(targets_hit: int, tp_multiples, cost_r: float = None) -> float:
+    """What a finished trade actually paid, in R.
+
+    ONE definition, used by the backtester, the live journal and the
+    expectancy figure printed on every signal. They each had their own before
+    this, and they disagreed: the backtester scored a trade that touched TP1
+    and TP2 before reversing as a full -1R loss, the journal scored the same
+    trade +0.33R, and the signal quoted an expectancy derived from neither.
+
+    The plan being modelled is the one the signal states: equal slices to each
+    target, and once the first fills the remainder rides at breakeven, so the
+    worst case after TP1 is keeping TP1's slice and scratching the rest.
+
+        3 targets at 1R/2R/3R, none hit   -> -1R minus costs
+        TP1 only                          -> 1/3 = +0.33R
+        TP1 and TP2                       -> (1+2)/3 = +1.00R
+        all three                         -> (1+2+3)/3 = +2.00R
+    """
+    cost_r = C.COST_R if cost_r is None else cost_r
+    mults = list(tp_multiples) or [1.0]
+    if targets_hit <= 0:
+        return -1.0 - cost_r
+    return sum(mults[:targets_hit]) / len(mults) - cost_r
+
+
 def read_block(res: dict, width: int = 14) -> str:
     """The confidence/probability table both front ends print inside a <pre>.
 

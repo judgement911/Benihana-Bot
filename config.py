@@ -72,6 +72,10 @@ class ModeSpec:
     bars: int            # history to request per timeframe
 
 
+# Three targets on every mode, capped at 3R. Nothing beyond 3R is ever
+# quoted: the barrier model puts P(4R) near a fifth even before costs, and
+# a target that far out is a lottery ticket dressed as a plan.
+#
 # Gold's liquidity: London open 07:00 UTC, NY open 13:30 UTC,
 # LDN/NY overlap 12:00-16:00 UTC is where the real range happens.
 MODES = {
@@ -79,19 +83,19 @@ MODES = {
         "scalp", "5min", "15min", "1h",
         ((7, 0, 11, 0), (12, 30, 16, 30)),
         min_rr=1.3, atr_sl_mult=0.8, max_sl_mult=1.6,
-        tp_multiples=(1.0, 2.0), bars=300,
+        tp_multiples=(1.0, 2.0, 3.0), bars=300,
     ),
     "intraday": ModeSpec(
         "intraday", "15min", "1h", "4h",
         ((6, 0, 20, 0),),
         min_rr=1.5, atr_sl_mult=1.0, max_sl_mult=2.2,
-        tp_multiples=(1.0, 2.0), bars=300,
+        tp_multiples=(1.0, 2.0, 3.0), bars=300,
     ),
     "swing": ModeSpec(
         "swing", "4h", "1day", "1week",
         ((0, 0, 23, 59),),
         min_rr=1.8, atr_sl_mult=1.5, max_sl_mult=2.8,
-        tp_multiples=(1.0, 2.5), bars=300,
+        tp_multiples=(1.0, 2.0, 3.0), bars=300,
     ),
 }
 
@@ -185,16 +189,7 @@ PROB_FLOOR = 0.05
 PROB_CEIL = 0.85
 
 # ------------------------------------------------------------- scanning/alerts
-# A sweep costs 3 requests per instrument. Against a free tier of 8/min, keep
-# the default list short and let the deadline stop it rather than the API.
-SCAN_DEADLINE_S = float(_get("SCAN_DEADLINE_S", "45"))
-CRAZY_MAX_SYMBOLS = int(_get("CRAZY_MAX_SYMBOLS", "8"))
-_raw_scan = _get("SCAN_SYMBOLS", "xauusd,eurusd,gbpusd,usdjpy,audusd,xagusd")
-SCAN_SYMBOLS = [s for s in (x.strip().lower() for x in _raw_scan.split(",")) if s]
-
-ALERTS_FILE = _get("ALERTS_FILE") or os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "alerts.json"
-)
+# A sweep costs 3 requests per instrument. Against a free tier of 8/min, keep)
 # Only an ENTRY this confident is worth interrupting someone for.
 ALERT_MIN_CONFIDENCE = int(_get("ALERT_MIN_CONFIDENCE", "55"))
 
@@ -207,6 +202,63 @@ JOURNAL_FILE = _get("JOURNAL_FILE") or os.path.join(
 JOURNAL_MAX_ENTRIES = int(_get("JOURNAL_MAX_ENTRIES", "2000"))
 # Bars after entry to wait before giving up on a signal that never resolved.
 JOURNAL_MAX_BARS = int(_get("JOURNAL_MAX_BARS", "120"))
+
+# ----------------------------------------------------------- auto-signals
+# §12: a setup this confident is sent without being asked. It still has to
+# satisfy the strategy's real entry conditions — a market merely moving is
+# not a signal. Per-user /setconf overrides this.
+AUTO_SIGNAL_CONFIDENCE = int(_get("AUTO_SIGNAL_CONFIDENCE", "85"))
+
+# -------------------------------------------------------------- lifecycle
+# Once the first target pays, the rest of the position rides at zero risk.
+# This is the plan the expectancy figure already assumes, so the lifecycle
+# tracker has to follow it or /stats and the signal disagree.
+MOVE_TO_BREAKEVEN_AFTER_TP1 = _get("MOVE_TO_BREAKEVEN_AFTER_TP1", "1") not in ("0", "false", "False")
+
+# ------------------------------------------------------------- strategies
+# Crimson Flow — momentum breakout. Weights total 100.
+CRIMSON_CHANNEL = int(_get("CRIMSON_CHANNEL", "20"))     # Donchian lookback
+CRIMSON_CLOSE_POS = float(_get("CRIMSON_CLOSE_POS", "0.66"))  # close in own range
+CRIMSON_ATR_EXPANSION = float(_get("CRIMSON_ATR_EXPANSION", "1.05"))
+CRIMSON_WEIGHTS = {
+    "bias_align": 20, "breakout": 30, "adx_rising": 18,
+    "close_position": 17, "atr_expansion": 10, "session": 5,
+}
+
+# Kage Protocol — volatility squeeze. Weights total 100.
+KAGE_BB_PERIOD = int(_get("KAGE_BB_PERIOD", "20"))
+KAGE_BB_K = float(_get("KAGE_BB_K", "2.0"))
+KAGE_SQUEEZE_LOOKBACK = int(_get("KAGE_SQUEEZE_LOOKBACK", "120"))
+KAGE_SQUEEZE_PCTILE = float(_get("KAGE_SQUEEZE_PCTILE", "0.25"))
+KAGE_WEIGHTS = {
+    "squeeze": 28, "expansion": 32, "bias_agree": 20,
+    "rsi_room": 12, "session": 8,
+}
+
+# ------------------------------------------------------------- volatility
+# ATR against its own recent median on the entry timeframe. Real measurement,
+# bucketed for display; nothing here is assigned by mood.
+VOL_HIGH_RATIO = float(_get("VOL_HIGH_RATIO", "1.35"))
+VOL_LOW_RATIO = float(_get("VOL_LOW_RATIO", "0.80"))
+
+# ----------------------------------------------------------------- money
+# Lot sizes are rounded DOWN to this step so a trade never risks more than the
+# user asked for. LOT_MIN is the smallest order a broker will take; a size
+# below it is reported rather than silently rounded up.
+LOT_STEP = float(_get("LOT_STEP", "0.01"))
+LOT_MIN = float(_get("LOT_MIN", "0.01"))
+
+# Non-USD risk amounts are converted with a live rate, cached this long. There
+# is no hardcoded fallback: a stale rate mis-sizes every position silently.
+FX_RATE_TTL = float(_get("FX_RATE_TTL", "3600"))
+
+# ------------------------------------------------------------- user settings
+# Language, strategy, confidence floor and the risk-management envelope, keyed
+# by Telegram user id. Anchored to the code directory for the same reason as
+# the calibration file: a WSGI worker does not run from the app directory.
+USERS_FILE = _get("USERS_FILE") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "users.json"
+)
 
 # ------------------------------------------------------------------ backtest
 # 1200 bars of 15min is twelve days, and the 4h bias needs 960 of them before

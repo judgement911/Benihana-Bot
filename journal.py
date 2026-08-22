@@ -25,13 +25,30 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import config as C
 import instruments as I
 from strategy import LONG
 
 WIN, LOSS, OPEN, EXPIRED = "win", "loss", "open", "expired"
+CANCELLED = "cancelled"
+
+# §18 lifecycle. `outcome` stays the settled verdict for /stats; `state` is
+# where the trade is right now, which is what the user gets notified about.
+WAITING, ACTIVE, BREAKEVEN = "waiting", "active", "breakeven"
+TP1, TP2, TP3 = "tp1", "tp2", "tp3"
+STOPPED, DONE = "stopped", "completed"
+
+# A signal in one of these is finished and no longer blocks a new one.
+FINAL_STATES = {STOPPED, DONE, EXPIRED, CANCELLED}
+
+STATUS_LABEL = {
+    WAITING: "WAIT", ACTIVE: "ACTIVE", BREAKEVEN: "BREAKEVEN",
+    TP1: "NEAR", TP2: "NEAR", TP3: "COMPLETED",
+    STOPPED: "STOPPED", DONE: "COMPLETED", EXPIRED: "EXPIRED",
+    CANCELLED: "CANCELLED",
+}
 
 TF_SECONDS = {"5min": 300, "15min": 900, "30min": 1800, "1h": 3600,
               "2h": 7200, "4h": 14400, "1day": 86400, "1week": 604800}
@@ -112,6 +129,20 @@ def record(res: dict) -> str | None:
         "hit_final": False,
         "r": None,
         "resolved_ts": None,
+        # ---- lifecycle -------------------------------------------------- #
+        # A market order is live the moment it is issued; a pending one is
+        # only waiting, and its entry has to trade before anything else can.
+        "state": ACTIVE if (res.get("order") or {}).get("kind") == "market"
+                 else WAITING,
+        "order_kind": (res.get("order") or {}).get("kind", "market"),
+        "tps_hit": [],
+        "strategy": res.get("strategy", "ronin"),
+        "user_id": res.get("user_id"),
+        # ---- money, so /daily can report P/L and points ------------------ #
+        "risk_cash": lv.get("risk_cash"),
+        "risk_points": lv.get("risk_points"),
+        "lots": lv.get("lots"),
+        "currency": res.get("risk_currency", "USD"),
     })
     _save(rows)
     return sid
@@ -306,3 +337,217 @@ def format_stats(key: str = None, mode: str = None) -> str:
                       "judge anything. Treat this as a running tally, not "
                       "evidence.</i>"]
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+#  Lifecycle (§18) — where each signal is right now
+# --------------------------------------------------------------------------- #
+def _touch(bar, level: float, direction: int, above: bool) -> bool:
+    return bool(bar["high"] >= level) if above else bool(bar["low"] <= level)
+
+
+def advance(row: dict, bars) -> list[dict]:
+    """Walk a signal forward through the bars it has not seen yet.
+
+    Returns the events that happened, in order, so the caller can notify.
+    Pessimism is the same as everywhere else in this codebase: a bar that
+    touches both a target and the stop is scored as the stop, because from
+    a daily candle you cannot know which came first and assuming the good
+    one is how backtests learn to lie.
+    """
+    events = []
+    if row.get("state") in FINAL_STATES:
+        return events
+
+    d = int(row["direction"])
+    long_ = d > 0
+    entry, stop = float(row["entry"]), float(row["stop"])
+    tps = [float(x) for x in row["tps"]]
+    hit = set(row.get("tps_hit") or [])
+
+    for ts, bar in bars.iterrows():
+        # A pending order has to fill before anything else can happen to it.
+        if row["state"] == WAITING:
+            if row["order_kind"] == "limit":
+                filled = bar["low"] <= entry if long_ else bar["high"] >= entry
+            elif row["order_kind"] == "stop":
+                filled = bar["high"] >= entry if long_ else bar["low"] <= entry
+            else:
+                filled = True
+            if not filled:
+                continue
+            row["state"] = ACTIVE
+            events.append({"kind": "entry", "ts": ts, "price": entry})
+
+        stop_now = float(row.get("stop_moved") or stop)
+        stopped = (bar["low"] <= stop_now) if long_ else (bar["high"] >= stop_now)
+
+        # Targets first only to record them; the stop still wins a tie below.
+        newly = []
+        for n, tp in enumerate(tps, start=1):
+            if n in hit:
+                continue
+            if (bar["high"] >= tp) if long_ else (bar["low"] <= tp):
+                newly.append((n, tp))
+
+        if stopped:
+            # Tie goes to the stop. If TP1 had already filled on an earlier
+            # bar and the stop has since moved to breakeven, this is a
+            # scratch rather than a full loss — _realised_r works that out.
+            row["state"] = STOPPED if not hit else DONE
+            row["outcome"] = LOSS if not hit else WIN
+            events.append({"kind": "stop", "ts": ts, "price": stop_now,
+                           "breakeven": bool(row.get("stop_moved"))})
+            break
+
+        for n, tp in newly:
+            hit.add(n)
+            row["tps_hit"] = sorted(hit)
+            row["hit_tp1"] = row["hit_tp1"] or n == 1
+            events.append({"kind": f"tp{n}", "ts": ts, "price": tp, "n": n})
+            if n == 1 and C.MOVE_TO_BREAKEVEN_AFTER_TP1:
+                # The strategy's own rule, not a hunch: once the first target
+                # pays, the rest of the position rides at zero risk.
+                row["stop_moved"] = entry
+                row["state"] = BREAKEVEN
+                events.append({"kind": "breakeven", "ts": ts, "price": entry})
+            if n == len(tps):
+                row["state"] = DONE
+                row["outcome"] = WIN
+                row["hit_final"] = True
+                events.append({"kind": "complete", "ts": ts, "price": tp})
+                break
+        if row["state"] in FINAL_STATES:
+            break
+
+    if row["state"] in FINAL_STATES and not row.get("resolved_ts"):
+        row["r"] = _realised_r(row)
+        row["resolved_ts"] = _iso(datetime.now(timezone.utc))
+    return events
+
+
+def active_signals(instrument: str = None, mode: str = None,
+                   user_id: int = None) -> list[dict]:
+    """Signals that have not finished. §19 identifies a flow by pair AND
+    trading style, so a live swing never blocks a scalp on the same pair."""
+    out = []
+    for r in _load():
+        if r.get("state") in FINAL_STATES:
+            continue
+        if r.get("state") is None and r.get("outcome") != OPEN:
+            continue
+        if instrument and r.get("instrument") != instrument:
+            continue
+        if mode and r.get("mode") != mode:
+            continue
+        if user_id is not None and r.get("user_id") not in (None, user_id):
+            continue
+        out.append(r)
+    return out
+
+
+def cancel(sid: str) -> bool:
+    rows = _load()
+    for r in rows:
+        if r["id"] == sid and r.get("state") not in FINAL_STATES:
+            r["state"] = CANCELLED
+            r["outcome"] = CANCELLED
+            r["resolved_ts"] = _iso(datetime.now(timezone.utc))
+            _save(rows)
+            return True
+    return False
+
+
+# --------------------------------------------------------------------------- #
+#  Period performance (§11) — /daily, /weekly, /monthly
+# --------------------------------------------------------------------------- #
+PERIODS = {"daily": 1, "weekly": 7, "monthly": 30}
+
+
+def period_stats(period: str = "daily", user_id: int = None) -> dict:
+    """Settled trades inside a window, counted in R, points and money.
+
+    The window is measured on the WIB calendar day, because that is the day
+    the user's own limits and habits run on. Only trades this bot actually
+    recorded and then resolved are counted — nothing is inferred, and open
+    trades contribute nothing until they finish.
+    """
+    days = PERIODS.get(period, 1)
+    now = datetime.now(users_tz())
+    if days == 1:
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        start = now - timedelta(days=days)
+
+    rows = []
+    for r in _load():
+        if r.get("r") is None or r.get("outcome") in (OPEN, EXPIRED, CANCELLED):
+            continue
+        if user_id is not None and r.get("user_id") not in (None, user_id):
+            continue
+        stamp = r.get("resolved_ts") or r.get("ts")
+        try:
+            when = datetime.fromisoformat(stamp).astimezone(users_tz())
+        except (TypeError, ValueError):
+            continue
+        if when >= start:
+            rows.append(r)
+
+    pairs: dict[str, int] = {}
+    profit = loss = 0.0
+    total_r = total_pts = 0.0
+    for r in rows:
+        key = (r.get("instrument") or "?").upper()
+        pairs[key] = pairs.get(key, 0) + 1
+        rr = float(r["r"])
+        total_r += rr
+        cash = float(r.get("risk_cash") or 0.0) * rr
+        if cash >= 0:
+            profit += cash
+        else:
+            loss += cash
+        total_pts += rr * float(r.get("risk_points") or 0.0)
+
+    return {
+        "period": period,
+        "start": start,
+        "trades": len(rows),
+        "pairs": pairs,
+        "profit": round(profit, 2),
+        "loss": round(loss, 2),
+        "net": round(profit + loss, 2),
+        "total_r": round(total_r, 2),
+        "total_points": round(total_pts, 1),
+        "wins": sum(1 for r in rows if float(r["r"]) > 0),
+        "losses": sum(1 for r in rows if float(r["r"]) <= 0),
+    }
+
+
+def users_tz():
+    """UTC+7 — the clock the user's day, and therefore their limits, run on."""
+    return timezone(timedelta(hours=7))
+
+
+def format_period(period: str = "daily", user_id: int = None,
+                  lang: str = "en") -> str:
+    import i18n
+    s = period_stats(period, user_id)
+    title = {"daily": "DAILY", "weekly": "WEEKLY", "monthly": "MONTHLY"}[period]
+    head = f"📊 <b>{title} {i18n.t('performance', lang)}</b>\n\n"
+
+    if not s["trades"]:
+        return head + f"<i>{i18n.t('no_trades_period', lang)}</i>"
+
+    pairs = ", ".join(f"{k}·{v}" for k, v in
+                      sorted(s["pairs"].items(), key=lambda x: -x[1]))
+    money = lambda v: f"{'+' if v >= 0 else '-'}${abs(v):,.2f}"
+    return (
+        head
+        + f"{i18n.t('trades', lang)}: <b>{s['trades']}</b>\n"
+        + f"{i18n.t('pairs', lang)}: {pairs}\n\n"
+        + f"✅ {i18n.t('profit', lang)}: {money(s['profit'])}\n"
+        + f"❌ {i18n.t('loss', lang)}: {money(s['loss'])}\n"
+        + f"💰 {i18n.t('net', lang)}: <b>{money(s['net'])}</b>\n\n"
+        + f"📈 {i18n.t('total_r', lang)}: <b>{s['total_r']:+.2f}R</b>\n"
+        + f"📐 {i18n.t('total_points', lang)}: {s['total_points']:+,.1f} pts"
+    )

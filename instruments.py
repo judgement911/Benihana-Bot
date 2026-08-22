@@ -25,18 +25,19 @@ about a trade:
 Index and energy contract sizes vary by broker. The defaults here are the
 common retail CFD conventions; check yours before trusting the lot size.
 
-Provider coverage is NOT uniform. Twelve Data's free tier reliably serves FX
-and metals; indices and energy usually need a paid plan. Each instrument
-declares its tier so a scan can default to what will actually return data,
-and `python check_universe.py` probes your key and tells you the truth.
+Indices, energy and the thin metals were removed rather than left in to fail:
+they need a paid data plan, and a symbol that always answers "no data" is
+worse than one that is simply absent. What remains is what a free forex plan
+actually serves — 28 pairs, gold and silver. `python check_universe.py`
+probes your key and confirms it.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-FX, METAL, ENERGY, INDEX = "fx", "metal", "energy", "index"
+FX, METAL = "fx", "metal"
 
-CLASS_LABEL = {FX: "Forex", METAL: "Metals", ENERGY: "Energy", INDEX: "Indices"}
+CLASS_LABEL = {FX: "Forex", METAL: "Metals"}
 
 # Tier: "core" is what a free forex data plan serves. "extended" commonly
 # needs a paid plan — still fully supported, just likely to return no data.
@@ -131,10 +132,6 @@ _ALL: list[Instrument] = [
                ("gold", "xau")),
     Instrument("xagusd", "XAG/USD", "Silver", METAL, 5_000.0, 3, 0.01, 0.02, CORE,
                ("silver", "xag")),
-    Instrument("xptusd", "XPT/USD", "Platinum", METAL, 100.0, 2, 1.0, 1.20, EXTENDED,
-               ("platinum", "xpt")),
-    Instrument("xpdusd", "XPD/USD", "Palladium", METAL, 100.0, 2, 1.0, 2.00, EXTENDED,
-               ("palladium", "xpd")),
 
     # ------------------------------------------------------------ fx majors
     _fx("eurusd", "Euro / Dollar", "euro", "fiber"),
@@ -168,31 +165,6 @@ _ALL: list[Instrument] = [
     _fx("nzdcad", "Kiwi / Loonie"),
     _fx("nzdchf", "Kiwi / Franc"),
 
-    # ---------------------------------------------------------------- energy
-    Instrument("usoil", "WTI/USD", "WTI Crude", ENERGY, 1_000.0, 2, 0.01,
-               0.03, EXTENDED, ("wti", "oil", "crude", "usoil", "wtiusd")),
-    Instrument("ukoil", "BRENT/USD", "Brent Crude", ENERGY, 1_000.0, 2, 0.01,
-               0.03, EXTENDED, ("brent", "ukoil", "brentusd")),
-    Instrument("ngas", "NG/USD", "Natural Gas", ENERGY, 10_000.0, 3, 0.001,
-               0.005, EXTENDED, ("natgas", "gas", "naturalgas")),
-
-    # --------------------------------------------------------------- indices
-    Instrument("us30", "DJI", "Dow Jones 30", INDEX, 1.0, 1, 1.0, 2.0, EXTENDED,
-               ("dow", "dji", "dowjones", "wallstreet")),
-    Instrument("us500", "SPX", "S&P 500", INDEX, 1.0, 1, 1.0, 0.5, EXTENDED,
-               ("sp500", "spx", "spx500", "sandp")),
-    Instrument("ustec", "NDX", "Nasdaq 100", INDEX, 1.0, 1, 1.0, 1.5, EXTENDED,
-               ("nas100", "nasdaq", "ndx", "nq", "us100")),
-    Instrument("ger40", "DAX", "DAX 40", INDEX, 1.0, 1, 1.0, 1.0, EXTENDED,
-               ("dax", "de40", "ger30", "germany40")),
-    Instrument("uk100", "FTSE", "FTSE 100", INDEX, 1.0, 1, 1.0, 1.0, EXTENDED,
-               ("ftse", "footsie", "uk")),
-    Instrument("jp225", "N225", "Nikkei 225", INDEX, 1.0, 1, 1.0, 8.0, EXTENDED,
-               ("nikkei", "n225", "japan225")),
-    Instrument("fra40", "CAC", "CAC 40", INDEX, 1.0, 1, 1.0, 1.0, EXTENDED,
-               ("cac", "cac40", "france40")),
-    Instrument("aus200", "ASX", "ASX 200", INDEX, 1.0, 1, 1.0, 1.0, EXTENDED,
-               ("asx", "asx200", "australia200")),
 ]
 
 BY_KEY: dict[str, Instrument] = {i.key: i for i in _ALL}

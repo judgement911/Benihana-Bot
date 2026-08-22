@@ -253,96 +253,40 @@ Your laptop closing kills the bot. Cheapest reliable options:
 
 ## Commands
 
-| Command | Effect |
+### Signals
+| Command | What it does |
 |---|---|
-| `/signal xauusd scalp` | full analysis |
-| `/signal scalp` | same, gold is the default |
-| `/signal nas100` | same, intraday is the default |
-| `/crazymode` | scan every market in `SCAN_SYMBOLS` and rank what it finds |
-| `/stats xauusd` | what the bot has actually delivered — see below |
-| `/alert xauusd scalp` | get pinged when a setup appears (needs the scan job) |
-| `/news xauusd` | Forex Factory calendar, filtered to what moves this symbol |
-| `/symbols` | the tradeable universe |
-| `/strategy` | what the bot checks, in-chat |
-| `/backtest intraday` | runs the backtest and replies with the results in chat |
-| `/backtest intraday calibrate` | same run, and the measured odds replace the model's guess from then on |
-| `/calibration` | are the odds measured or modelled? shows the sample behind them |
-| `/whoami` | your Telegram user ID |
+| `/signal xauusd intraday` | One signal. Add `scalp` or `swing` for a different style. |
+| `/signal xauusd scalp risk 20$` | Size it for a specific risk. `risk 300k IDR` works too. |
+| `/signals` | Everything currently running. |
+| `/scan` | Sweep the free universe and rank what it finds. |
+| `/cancel <id>` | Drop a running signal so a new one can be issued. |
+| `/setconf 80` | Only send signals at 80% confidence or higher. |
+| `/strategy` | List the three strategies; `/strategy 2` selects one. |
+| `/symbols` | Everything it can trade. |
 
-Every reply has Scalp / Intraday / Swing buttons, plus **Details** to expand
-the reasoning and **Refresh** to re-run.
+### Performance
+| Command | What it does |
+|---|---|
+| `/daily` `/weekly` `/monthly` | Trades, pairs, P/L, total R and points for the period. |
+| `/stats xauusd` | Lifetime record, and whether the odds it quoted were honest. |
+| `/history` | The last ten settled trades. |
+| `/backtest intraday calibrate` | Replay history and replace modelled odds with measured ones. |
+| `/calibration` | Is the probability measured or modelled? |
 
-### Symbols
+### Risk management
+| Command | What it does |
+|---|---|
+| `/management on 1000$ 1 5 5 5` | Balance, risk %, daily drawdown %, max daily trades, profit target %. |
+| `/management off` | Stop managing. |
 
-43 CFDs: 28 forex pairs, 4 metals, 3 energy, 8 indices. Nicknames work —
-`gold`, `cable`, `aussie`, `nas100`, `guppy`. No crypto: it trades weekends,
-and the session windows in `MODES` are built around London and New York.
-
-Your data plan probably does not serve all of them. Free tiers generally
-cover FX and metals; indices and energy usually need paying. Find out
-without guessing:
-
-```bash
-python check_universe.py            # probes every symbol, prints what works
-```
-
-It ends with a `SCAN_SYMBOLS = "..."` line you can paste into your config.
-
-### `/stats` — the part most signal bots skip
-
-Every ENTRY is written to `journal.json` **when it is issued**, before the
-outcome is known, and graded later against candles the bot had never seen. A
-bar that touches both the target and the stop counts as the stop, same
-pessimistic rule the backtester uses.
-
-```
-XAUUSD — BENIHANA PERFORMANCE
-
-Signals: 31
-Wins: 21
-Losses: 9
-Win Rate: 70.0%
-Avg RR: 1:2
-Profit Factor: 2.27
-Expectancy: +0.40R per signal
-
-Last 20:
-L W L W W W L W L W W W W W W L W W L W
-
-Claimed 53% on these, paid 70% — the model was pessimistic.
-```
-
-That last line is the point: the bot grades its own forecast. It starts
-empty and stays empty until real signals resolve. It will not invent a
-track record to fill the screen.
-
-### `/alert` — and the thing you need to know about it
-
-`/alert xauusd scalp` subscribes you. But this bot is a **webhook** — it only
-runs when Telegram pokes it, so it cannot watch the market on its own.
-Something has to run the scanner on a schedule:
-
-```bash
-python scan_job.py              # sweep every subscription, push what it finds
-python scan_job.py --dry-run    # see what would be sent, send nothing
-```
-
-On PythonAnywhere: **Tasks** tab → `python3 ~/Benihana-Bot/scan_job.py`. A
-free account gets **one scheduled task per day**, so alerts fire once daily.
-Hourly needs a paid plan, or run the job from any machine that stays on.
-
-### `/news`
-
-Reads the real Forex Factory calendar and filters it to the currencies that
-move your instrument — gold answers to USD, GER40 to EUR, EUR/USD to both
-legs. Times print in your timezone (`NEWS_TZ_OFFSET`, default UTC+7 WIB).
-
-On a PythonAnywhere free account this will fail: outbound traffic is limited
-to a whitelist and the Forex Factory feed is not on it. `/news` says so
-plainly rather than hanging. Price data still works because Twelve Data is
-whitelisted.
-
----
+### Settings and other
+| Command | What it does |
+|---|---|
+| `/language english` / `/language bahasa` | Every message switches, and the choice sticks. |
+| `/settings` · `/status` | What is configured, and what is running. |
+| `/motivation` | One line about discipline. |
+| `/help` | This list. |
 
 ## Honest limitations
 

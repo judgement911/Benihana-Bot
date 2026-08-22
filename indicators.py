@@ -159,3 +159,27 @@ def resample_ohlc(df: pd.DataFrame, rule: str) -> pd.DataFrame:
         {"open": "first", "high": "max", "low": "min", "close": "last"}
     )
     return out.dropna()
+
+
+def donchian(df: pd.DataFrame, n: int = 20) -> pd.DataFrame:
+    """Highest high and lowest low of the last n COMPLETED bars.
+
+    Shifted by one deliberately: a channel that includes the current bar can
+    never be broken by it, and a backtest that forgets the shift reports
+    breakouts it could not have traded.
+    """
+    return pd.DataFrame({
+        "upper": df["high"].rolling(n).max().shift(1),
+        "lower": df["low"].rolling(n).min().shift(1),
+    })
+
+
+def bollinger(close: pd.Series, n: int = 20, k: float = 2.0) -> pd.DataFrame:
+    mid = close.rolling(n).mean()
+    sd = close.rolling(n).std(ddof=0)
+    upper, lower = mid + k * sd, mid - k * sd
+    return pd.DataFrame({
+        "mid": mid, "upper": upper, "lower": lower,
+        # Width relative to price, so it is comparable across instruments.
+        "width": (upper - lower) / mid.replace(0, pd.NA),
+    })

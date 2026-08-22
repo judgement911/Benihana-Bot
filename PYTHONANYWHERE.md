@@ -206,7 +206,7 @@ means the IP is refused.
 
 ---
 
-## Scheduled scanning for /alert
+## Scheduled job for auto-signals and trade tracking
 
 **Tasks** tab → `python3 /home/YOURNAME/Benihana-Bot/scan_job.py`
 
@@ -222,7 +222,7 @@ python3 check_universe.py
 ```
 
 One request per instrument, spaced for the free-tier rate limit. Prints a
-`SCAN_SYMBOLS = "..."` line to paste into `pa_config.py`. Indices and energy
+`SCAN_SYMBOLS = "..."` line to paste into `pa_config.py`. The universe
 usually need a paid data plan; FX and metals normally work.
 
 ## Files the bot writes

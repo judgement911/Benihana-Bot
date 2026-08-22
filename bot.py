@@ -21,11 +21,8 @@ import probability as prob
 from backtest import build_calibration, write_calibration
 from backtest import run as backtest_run
 from data import DataError, fetch_ohlc
-import alerts
 import instruments as I
 import journal
-import news
-import scanner
 import view
 from strategy import evaluate
 
@@ -284,85 +281,6 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode=ParseMode.HTML)
 
 
-async def cmd_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not allowed(update):
-        return
-    symbol_key, _, _ = parse_args(ctx.args or [])
-    inst = I.BY_KEY[symbol_key]
-    loop = asyncio.get_running_loop()
-    text = await loop.run_in_executor(None, news.format_news, inst)
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-
-
-ALERT_HELP = (
-    "<b>Alerts</b>\n\n"
-    "<code>/alert xauusd scalp</code> — tell me when gold sets up\n"
-    "<code>/alert</code> — what you are watching\n"
-    "<code>/alert off</code> — stop everything\n\n"
-    f"You get the full signal as soon as an ENTRY appears at "
-    f"{C.ALERT_MIN_CONFIDENCE}%+ confidence.\n\n"
-    "Polling mode watches continuously while this process is running, so "
-    "alerts need <code>scan_job.py</code> on a schedule (cron, systemd timer, "
-    "or the PythonAnywhere Tasks tab)."
-)
-
-
-async def cmd_alert(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not allowed(update):
-        return
-    args = list(ctx.args or [])
-    chat_id = update.effective_chat.id
-    words = [a.lower().lstrip("/") for a in args]
-
-    if any(w in ("off", "stop", "clear", "none") for w in words):
-        n = alerts.remove(chat_id)
-        await update.message.reply_text(
-            f"Cleared {n} alert{'s' if n != 1 else ''}." if n else "No alerts set.")
-        return
-    if not args:
-        await update.message.reply_text(alerts.format_list(chat_id),
-                                        parse_mode=ParseMode.HTML)
-        return
-
-    symbol_key, mode, bad = parse_args(args)
-    if bad:
-        await update.message.reply_text(f"Don't know '{bad}'. Try /symbols.")
-        return
-    inst = I.BY_KEY[symbol_key]
-    if alerts.add(chat_id, symbol_key, mode):
-        await update.message.reply_text(
-            f"🔔 Watching <b>{inst.display}</b> on <b>{mode}</b>.\n\n"
-            f"<i>Delivery needs the scan job running. /alerthelp explains.</i>",
-            parse_mode=ParseMode.HTML)
-    else:
-        await update.message.reply_text(f"Already watching {inst.display} {mode}.")
-
-
-async def cmd_alerthelp(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if allowed(update):
-        await update.message.reply_text(ALERT_HELP, parse_mode=ParseMode.HTML)
-
-
-async def cmd_crazymode(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not allowed(update):
-        return
-    _, mode, _ = parse_args(ctx.args or [])
-    keys = [k for k in C.SCAN_SYMBOLS if k in I.BY_KEY][:C.CRAZY_MAX_SYMBOLS]
-    msg = await update.message.reply_text(f"⚔️ Scanning {len(keys)} markets on {mode}…")
-
-    loop = asyncio.get_running_loop()
-    try:
-        result = await loop.run_in_executor(
-            None, lambda: scanner.scan(keys, mode, fetch_ohlc, log=log.warning))
-        text = scanner.format_scan(result)
-        for res in scanner.tradeable(result["rows"]):
-            journal.record(res)
-    except Exception:  # noqa: BLE001
-        log.exception("crazymode failed")
-        text = "⚠️ Scan failed. Check the log."
-    await msg.edit_text(text, parse_mode=ParseMode.HTML)
-
-
 async def cmd_symbols(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not allowed(update):
         return
@@ -391,10 +309,6 @@ def main() -> None:
     app.add_handler(CommandHandler("calibration", cmd_calibration))
     app.add_handler(CommandHandler("whoami", cmd_whoami))
     app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(CommandHandler("news", cmd_news))
-    app.add_handler(CommandHandler(["alert", "alerts"], cmd_alert))
-    app.add_handler(CommandHandler("alerthelp", cmd_alerthelp))
-    app.add_handler(CommandHandler(["crazymode", "scan"], cmd_crazymode))
     app.add_handler(CommandHandler("symbols", cmd_symbols))
     app.add_handler(CallbackQueryHandler(on_button, pattern=r"^s\|"))
 

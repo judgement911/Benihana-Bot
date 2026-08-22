@@ -23,13 +23,14 @@ from datetime import datetime, timezone
 
 import config as C
 import instruments as I
-from strategy import DIR_NAME, evaluate
+import strategies
+from strategy import DIR_NAME
 
 DIR_DOT = {"BUY": "🟢", "SELL": "🔴"}
 
 
 def scan(keys, mode: str, fetch, deadline_s: float = None,
-         now: datetime = None, log=None) -> dict:
+         now: datetime = None, log=None, strategy: str = None) -> dict:
     """Evaluate each instrument in `keys`. Never raises for one bad symbol."""
     spec = C.MODES[mode]
     deadline_s = C.SCAN_DEADLINE_S if deadline_s is None else deadline_s
@@ -49,7 +50,7 @@ def scan(keys, mode: str, fetch, deadline_s: float = None,
             e = fetch(inst.symbol, spec.entry_tf, spec.bars)
             t = fetch(inst.symbol, spec.trend_tf, spec.bars)
             b = fetch(inst.symbol, spec.bias_tf, spec.bars)
-            res = evaluate(e, t, b, spec, now, instrument=inst)
+            res = strategies.evaluate(strategy, e, t, b, spec, now, instrument=inst)
         except Exception as exc:  # noqa: BLE001 — one dead symbol must not kill the sweep
             errors.append((key, f"{type(exc).__name__}: {exc}"))
             if log:

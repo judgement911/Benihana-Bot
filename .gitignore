@@ -1,0 +1,26 @@
+# Bytecode. Regenerated on every run; never belongs in history.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ---------------------------------------------------------------- SECRETS
+# pa_config.py holds the Telegram bot token, the data provider key and the
+# webhook secret. It is deliberately absent from this repository and must
+# stay that way — pa_config_example.py is the template to copy.
+pa_config.py
+.env
+
+# ------------------------------------------------------------ RUNTIME DATA
+# Written by the running bot on its own host. These are one user's settings,
+# trade history and measured odds, not source: committing them would ship
+# somebody's account state to everyone who clones, and would overwrite the
+# live file on the next deploy.
+users.json
+journal.json
+calibration.json
+bakeoff_results.json
+
+# Local scratch
+*.log
+*.csv

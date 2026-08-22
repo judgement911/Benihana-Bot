@@ -179,15 +179,18 @@ def _walk(row: dict, bars) -> tuple[str, bool, bool]:
 
 
 def _realised_r(row: dict) -> float:
-    """Equal slices to each target, breakeven on the rest once TP1 fills."""
-    if not row["hit_tp1"]:
-        return -1.0 - C.COST_R
-    mults = row["tp_multiples"] or [1.0]
-    n = len(mults)
-    r = mults[0] / n
-    if row["hit_final"] and n > 1:
-        r += sum(mults[1:]) / n
-    return r - C.COST_R
+    """One shared definition with the backtester — see probability.realised_r.
+
+    The old version here credited only TP1's slice unless every target
+    filled, so a trade that banked TP1 and TP2 before reversing scored
+    +0.33R instead of +1.00R. It also disagreed with the backtester, which
+    scored that same trade as a full loss.
+    """
+    import probability as prob                     # noqa: PLC0415
+    hit = len(row.get("tps_hit") or ([1] if row.get("hit_tp1") else []))
+    if row.get("hit_final"):
+        hit = len(row.get("tp_multiples") or [1.0])
+    return prob.realised_r(hit, row.get("tp_multiples") or [1.0], C.COST_R)
 
 
 def resolve(fetch, now: datetime = None) -> dict:

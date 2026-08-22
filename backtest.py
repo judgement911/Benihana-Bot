@@ -29,6 +29,8 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
+from dataclasses import replace
+
 import config as C
 import probability as prob
 from data import load_csv
@@ -49,10 +51,16 @@ COST_R = C.COST_R
 
 
 def run(entry_df: pd.DataFrame, mode: str, window: int = 500,
-        strategy=None) -> tuple:
+        strategy=None, tp_multiples=None) -> tuple:
     """window = how many bars of history each evaluation sees. 500 is plenty of
     warmup for an EMA200 and keeps this O(n) instead of O(n^2)."""
     spec = C.MODES[mode]
+    if tp_multiples:
+        # Sweeping reward targets means changing the plan, not just the label:
+        # the targets feed position sizing, the room-to-swing gate and the
+        # probability model, so the whole spec is replaced rather than the
+        # numbers patched in afterwards.
+        spec = replace(spec, tp_multiples=tuple(float(x) for x in tp_multiples))
     trend_full = resample_ohlc(entry_df, RESAMPLE_RULE[spec.trend_tf])
     bias_full = resample_ohlc(entry_df, RESAMPLE_RULE[spec.bias_tf])
     # Cut the higher timeframes by binary search on the index. Masking with

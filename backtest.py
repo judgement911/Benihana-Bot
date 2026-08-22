@@ -32,6 +32,7 @@ import pandas as pd
 from dataclasses import replace
 
 import config as C
+import instruments as I
 import probability as prob
 from data import load_csv
 
@@ -51,10 +52,18 @@ COST_R = C.COST_R
 
 
 def run(entry_df: pd.DataFrame, mode: str, window: int = 500,
-        strategy=None, tp_multiples=None) -> tuple:
+        strategy=None, tp_multiples=None, instrument=None) -> tuple:
     """window = how many bars of history each evaluation sees. 500 is plenty of
-    warmup for an EMA200 and keeps this O(n) instead of O(n^2)."""
+    warmup for an EMA200 and keeps this O(n) instead of O(n^2).
+
+    `instrument` is NOT optional in practice. Without it every evaluation
+    defaults to gold, and gold rounds prices to two decimals — which turns a
+    EUR/USD entry of 1.08432 and its stop at 1.08312 into 1.08 and 1.08, a
+    risk of exactly zero, and every level collapsed onto one number. The
+    results that come back are noise that looks like data.
+    """
     spec = C.MODES[mode]
+    inst = instrument or I.GOLD
     if tp_multiples:
         # Sweeping reward targets means changing the plan, not just the label:
         # the targets feed position sizing, the room-to-swing gate and the
@@ -125,9 +134,11 @@ def run(entry_df: pd.DataFrame, mode: str, window: int = 500,
         if len(t_slice) < 60 or len(b_slice) < 60:
             continue
 
-        res = (strategy(e_slice, t_slice, b_slice, spec, now.to_pydatetime())
+        res = (strategy(e_slice, t_slice, b_slice, spec, now.to_pydatetime(),
+                        instrument=inst)
                if strategy else
-               evaluate(e_slice, t_slice, b_slice, spec, now.to_pydatetime()))
+               evaluate(e_slice, t_slice, b_slice, spec, now.to_pydatetime(),
+                        instrument=inst))
         if res["decision"] != "ENTRY":
             continue
 

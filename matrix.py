@@ -38,6 +38,7 @@ import sys
 import pandas as pd
 
 import config as C
+import instruments as I
 from backtest import run as backtest_run
 from bakeoff import MIN_TRADES, _metrics, _score
 from strategies import ORDER, REGISTRY
@@ -97,9 +98,13 @@ def _one(job: tuple) -> dict:
     path, mode, pair, key, rr_label = job
     try:
         df = load(path)
+        inst = I.find(pair)
+        if inst is None:
+            raise ValueError(f"unknown instrument {pair!r} — refusing to guess")
         with contextlib.redirect_stdout(io.StringIO()):
             stats, _ = backtest_run(df, mode, strategy=REGISTRY[key].evaluate,
-                                    tp_multiples=RR_SETS[rr_label])
+                                    tp_multiples=RR_SETS[rr_label],
+                                    instrument=inst)
         tl = stats.get("trade_log") or []
         m = _metrics(tl)
         m.update(_direction(tl))

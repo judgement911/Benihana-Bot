@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import math
 import io
 import json
 import os
@@ -140,15 +141,25 @@ def _metrics(trades: list[dict]) -> dict:
 
 
 def _score(m: dict) -> float:
-    """Robustness, not raw return. Unrankable candidates score -inf."""
-    if m.get("trades", 0) < MIN_TRADES:
+    """Robustness, not raw return. Unrankable candidates score -inf.
+
+    Every term is scale-free, which the first version was not. Drawdown was
+    subtracted in raw R, and drawdown grows with the number of trades — so a
+    candidate that traded 300 times was punished against one that traded 47,
+    at identical per-trade quality, purely for trading more. Dividing by the
+    square root of the trade count removes that: for any equity curve the
+    expected maximum excursion scales as sqrt(n), so dd/sqrt(n) measures the
+    depth of the ride rather than the length of it.
+    """
+    n = m.get("trades", 0)
+    if n < MIN_TRADES:
         return float("-inf")
     exp = m["expectancy"]
-    dd = abs(m["max_dd_r"])
+    dd_normalised = abs(m["max_dd_r"]) / math.sqrt(n)
     pf = min(m["profit_factor"], 5.0)          # cap: 12.0 and 5.0 are both "good"
     consistency = 1.0 if m["consistent"] else 0.0
-    # Expectancy carries the weight; drawdown subtracts; consistency breaks ties.
-    return (exp * 100.0) + (pf * 8.0) - (dd * 4.0) + (consistency * 15.0)
+    return ((exp * 100.0) + (pf * 8.0) - (dd_normalised * 12.0)
+            + (consistency * 15.0))
 
 
 def run_bakeoff(entry_df: pd.DataFrame, mode: str, only=None, done=None,
@@ -295,8 +306,19 @@ def main() -> int:
         return 1
 
     saved = load_results(args.out) if args.resume else {}
-    saved.pop("_bars", None)
-    saved.pop("_mode", None)
+    prev_bars = saved.pop("_bars", None)
+    prev_mode = saved.pop("_mode", None)
+
+    # Ranking a 5000-bar result against a 2500-bar one is not a comparison,
+    # it is two different experiments in one table. Refuse rather than
+    # quietly produce a number nobody can interpret.
+    if saved and (prev_bars, prev_mode) != (len(df), args.mode):
+        print(f"Saved results were measured on {prev_bars} bars of "
+              f"{prev_mode}; this run is {len(df)} bars of {args.mode}. "
+              f"Mixing them would rank two different experiments against "
+              f"each other.\n\nEither match the earlier run, or start a "
+              f"clean file:\n  rm {args.out}", file=sys.stderr)
+        return 1
     only = [k.strip() for k in args.only.split(",")] if args.only else None
 
     todo = len([k for k in (only or CAND.CANDIDATES) if k not in saved])

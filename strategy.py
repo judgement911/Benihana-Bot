@@ -28,6 +28,7 @@ import pandas as pd
 import config as C
 import indicators as ind
 import instruments as I
+import money as M
 import probability as prob
 
 LONG, SHORT, FLAT = 1, -1, 0
@@ -180,6 +181,7 @@ def _order_plan(decision: str, direction: int, price: float, e: dict,
     if decision == "ENTRY":
         return {"kind": "market", "price": round(float(price), inst.digits),
                 "label": ORDER_LABEL[("market", direction)],
+                "note_key": "order_market", "note_args": {},
                 "note": "every condition met on the last close — executable now"}
 
     zone = float(e["ema20"])
@@ -192,10 +194,11 @@ def _order_plan(decision: str, direction: int, price: float, e: dict,
 
     if not pulled_back:
         # Rest the order in the zone the strategy actually wants to buy.
+        away = inst.fmt_risk(abs(price - zone))
         return {"kind": "limit", "price": round(zone, inst.digits),
                 "label": ORDER_LABEL[("limit", direction)],
-                "note": f"rests in the EMA20 zone, {inst.fmt_risk(abs(price - zone))} "
-                        f"from here"}
+                "note_key": "order_limit", "note_args": {"away": away},
+                "note": f"rests in the EMA20 zone, {away} from here"}
 
     # In the zone already; what is missing is confirmation. Sit beyond the
     # recent extreme so the market has to move your way to fill you.
@@ -206,6 +209,7 @@ def _order_plan(decision: str, direction: int, price: float, e: dict,
         trigger = min(float(recent["low"].min()), price) - 0.10 * atr
     return {"kind": "stop", "price": round(float(trigger), inst.digits),
             "label": ORDER_LABEL[("stop", direction)],
+            "note_key": "order_stop", "note_args": {},
             "note": "already in the zone — fills only if the turn confirms"}
 
 
@@ -221,6 +225,7 @@ def evaluate(
     balance: float = None,
     risk_pct: float = None,
     instrument: "I.Instrument" = None,
+    risk_usd: float = None,
 ) -> dict:
     now_utc = now_utc or datetime.now(timezone.utc)
     # Sizing and rounding are per-instrument: a forex lot is 100,000 base
@@ -300,6 +305,7 @@ def evaluate(
 
     direction = trend_dir
     out["direction"] = direction
+    out["atr_ratio"] = round(float(e["atr_ratio"]), 3) if e.get("atr_ratio") else None
 
     # ----------------------------------------------------------------- SCORING
     reasons = []
@@ -484,17 +490,23 @@ def evaluate(
         if opposing is not None and risk_shown > 0:
             rr = abs(opposing - entry_r) / risk_shown
 
-        risk_cash = balance * risk_pct / 100.0
+        # An explicit per-signal risk wins over the account percentage: the
+        # user asked for this many dollars at stake, not this fraction.
+        risk_cash = (float(risk_usd) if risk_usd is not None
+                     else balance * risk_pct / 100.0)
 
         # Risk per lot lands in the quote currency; convert before dividing, or
         # a 23,600-yen stop on USD/JPY reads as a 23,600-dollar stop and the
         # size collapses to zero.
         usd_per_quote = inst.usd_per_quote(entry_r)
-        lots = None
+        lots_raw = None
         if risk_shown > 0 and usd_per_quote:
             risk_per_lot_usd = risk_shown * inst.contract_size * usd_per_quote
             if risk_per_lot_usd > 0:
-                lots = risk_cash / risk_per_lot_usd
+                lots_raw = risk_cash / risk_per_lot_usd
+        # Brokers take discrete lot steps, so 0.0457 is not an order. Round
+        # DOWN — rounding up would risk more than the user asked for.
+        lots, below_min = M.round_lots(lots_raw)
 
         levels = {
             "entry": entry_r,
@@ -506,11 +518,16 @@ def evaluate(
             "stop_clamped": clamped,
             "tps": [round(float(x), d) for x in tps],
             "tp_multiples": spec.tp_multiples,
+            "tp_points": [round(risk_shown * m, d) for m in spec.tp_multiples],
+            "tp_points_display": [inst.fmt_risk(risk_shown * m)
+                                  for m in spec.tp_multiples],
             "room_rr": round(float(rr), 2) if rr else None,
             "next_obstacle": round(float(opposing), d) if opposing else None,
             # Small sizes need more than two decimals or a 0.074-lot gold trade
             # prints as 0.07 and quietly risks 5% less than you asked for.
-            "lots": None if lots is None else round(float(lots), 2 if lots >= 1 else 3),
+            "lots": lots,
+            "lots_raw": None if lots_raw is None else round(float(lots_raw), 4),
+            "lots_below_min": below_min,
             "risk_cash": round(float(risk_cash), 2),
             "atr": round(float(atr_e), d),
         }

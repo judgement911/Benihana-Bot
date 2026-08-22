@@ -72,6 +72,10 @@ class ModeSpec:
     bars: int            # history to request per timeframe
 
 
+# Three targets on every mode, capped at 3R. Nothing beyond 3R is ever
+# quoted: the barrier model puts P(4R) near a fifth even before costs, and
+# a target that far out is a lottery ticket dressed as a plan.
+#
 # Gold's liquidity: London open 07:00 UTC, NY open 13:30 UTC,
 # LDN/NY overlap 12:00-16:00 UTC is where the real range happens.
 MODES = {
@@ -79,19 +83,19 @@ MODES = {
         "scalp", "5min", "15min", "1h",
         ((7, 0, 11, 0), (12, 30, 16, 30)),
         min_rr=1.3, atr_sl_mult=0.8, max_sl_mult=1.6,
-        tp_multiples=(1.0, 2.0), bars=300,
+        tp_multiples=(1.0, 2.0, 3.0), bars=300,
     ),
     "intraday": ModeSpec(
         "intraday", "15min", "1h", "4h",
         ((6, 0, 20, 0),),
         min_rr=1.5, atr_sl_mult=1.0, max_sl_mult=2.2,
-        tp_multiples=(1.0, 2.0), bars=300,
+        tp_multiples=(1.0, 2.0, 3.0), bars=300,
     ),
     "swing": ModeSpec(
         "swing", "4h", "1day", "1week",
         ((0, 0, 23, 59),),
         min_rr=1.8, atr_sl_mult=1.5, max_sl_mult=2.8,
-        tp_multiples=(1.0, 2.5), bars=300,
+        tp_multiples=(1.0, 2.0, 3.0), bars=300,
     ),
 }
 
@@ -207,6 +211,31 @@ JOURNAL_FILE = _get("JOURNAL_FILE") or os.path.join(
 JOURNAL_MAX_ENTRIES = int(_get("JOURNAL_MAX_ENTRIES", "2000"))
 # Bars after entry to wait before giving up on a signal that never resolved.
 JOURNAL_MAX_BARS = int(_get("JOURNAL_MAX_BARS", "120"))
+
+# ------------------------------------------------------------- volatility
+# ATR against its own recent median on the entry timeframe. Real measurement,
+# bucketed for display; nothing here is assigned by mood.
+VOL_HIGH_RATIO = float(_get("VOL_HIGH_RATIO", "1.35"))
+VOL_LOW_RATIO = float(_get("VOL_LOW_RATIO", "0.80"))
+
+# ----------------------------------------------------------------- money
+# Lot sizes are rounded DOWN to this step so a trade never risks more than the
+# user asked for. LOT_MIN is the smallest order a broker will take; a size
+# below it is reported rather than silently rounded up.
+LOT_STEP = float(_get("LOT_STEP", "0.01"))
+LOT_MIN = float(_get("LOT_MIN", "0.01"))
+
+# Non-USD risk amounts are converted with a live rate, cached this long. There
+# is no hardcoded fallback: a stale rate mis-sizes every position silently.
+FX_RATE_TTL = float(_get("FX_RATE_TTL", "3600"))
+
+# ------------------------------------------------------------- user settings
+# Language, strategy, confidence floor and the risk-management envelope, keyed
+# by Telegram user id. Anchored to the code directory for the same reason as
+# the calibration file: a WSGI worker does not run from the app directory.
+USERS_FILE = _get("USERS_FILE") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "users.json"
+)
 
 # ------------------------------------------------------------------ backtest
 # 1200 bars of 15min is twelve days, and the 4h bias needs 960 of them before

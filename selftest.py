@@ -226,7 +226,7 @@ def check_instruments() -> bool:
 
     # Quote conversion: exact where it can be, absent where it cannot.
     cases = [("eurusd", 1.085, 1.0), ("xauusd", 4500.0, 1.0),
-             ("us500", 5900.0, 1.0), ("usdjpy", 157.2, 1 / 157.2)]
+             ("usdjpy", 157.2, 1 / 157.2), ("gbpusd", 1.27, 1.0)]
     for key, px, want in cases:
         got = I.BY_KEY[key].usd_per_quote(px)
         if got is None or abs(got - want) > 1e-9:
@@ -258,7 +258,7 @@ def check_sizing() -> bool:
     from indicators import resample_ohlc
     ok = True
     prices = {"xauusd": 4500.0, "eurusd": 1.0850, "usdjpy": 157.2,
-              "us500": 5900.0, "xagusd": 31.2}
+              "gbpusd": 1.2700, "xagusd": 31.2}
     for key, base in prices.items():
         inst = I.BY_KEY[key]
         df = synth(kind="uptrend", n=1200)
@@ -277,10 +277,22 @@ def check_sizing() -> bool:
             if abs(abs(lv["entry"] - lv["stop"]) - lv["risk_points"]) > 10 ** -inst.digits:
                 print(f"  FAIL {key}: printed levels disagree with printed risk")
                 ok = False
+            # Lots round DOWN to a broker step, so the realised risk sits at
+            # or just under the request — never over it, and never by more
+            # than one step's worth. That is the invariant, not "within 2%":
+            # a small position can lose several percent to one 0.01 step and
+            # still be behaving exactly as intended.
             usd = (lv["lots"] * inst.contract_size * lv["risk_points"]
                    * inst.usd_per_quote(lv["entry"]))
-            if abs(usd - lv["risk_cash"]) / lv["risk_cash"] > 0.02:
-                print(f"  FAIL {key}: sized for ${usd:,.0f}, asked for ${lv['risk_cash']:,.0f}")
+            step_usd = (C.LOT_STEP * inst.contract_size * lv["risk_points"]
+                        * inst.usd_per_quote(lv["entry"]))
+            if usd > lv["risk_cash"] + 1e-6:
+                print(f"  FAIL {key}: risks ${usd:,.2f}, MORE than the "
+                      f"${lv['risk_cash']:,.2f} asked for")
+                ok = False
+            elif lv["risk_cash"] - usd >= step_usd:
+                print(f"  FAIL {key}: sized ${usd:,.2f} against ${lv['risk_cash']:,.2f} "
+                      f"— more than one {C.LOT_STEP} step short")
                 ok = False
             break
     if ok:

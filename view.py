@@ -20,8 +20,11 @@ from __future__ import annotations
 
 import html
 
+import i18n
 import instruments as I
+import money as M
 import probability as prob
+import sessions as SESS
 from strategy import DIR_NAME
 
 # Compact needs a word, not a sentence. The scorecard in Details carries the
@@ -38,6 +41,15 @@ SHORT_LABEL = {
 }
 
 DIR_ICON = {"BUY": "🟢", "SELL": "🔴"}
+
+# One emoji per target, escalating with how unlikely it is.
+TP_ICON = ("🤡", "🥵", "💀")
+
+# §22 lifecycle states. The signal carries whichever one it is actually in.
+STATUS_ICON = {
+    "WAIT": "⏳", "ACTIVE": "🟢", "NEAR": "⚠️", "BREAKEVEN": "🛡️",
+    "COMPLETED": "✅", "STOPPED": "❌", "EXPIRED": "⌛", "CANCELLED": "🚫",
+}
 
 
 def _inst(res: dict) -> "I.Instrument":
@@ -62,45 +74,80 @@ def _subhead(res: dict, with_price: bool) -> str:
     bits = [res["mode"].upper(), res["timeframes"]["entry"]]
     if with_price:
         bits.append(_p(res["price"], _inst(res)))
-    bits.append(res["as_of"].strftime("%H:%M UTC"))
+    bits.append(SESS.stamp(res["as_of"]))
     return " · ".join(bits)
 
 
-def _levels_lines(res: dict, live: bool) -> str:
-    """The levels as ordinary text.
+def _levels_lines(res: dict, live: bool, lang: str = i18n.EN) -> str:
+    """Entry, stop and every target, each labelled with what it is worth.
 
-    These used to sit in a <pre> block, which Telegram renders as a code box
-    with a copy button hanging off the corner — it looked like debug output
-    rather than a trade. Plain text costs the column alignment, since the
-    chat font is proportional, so each row labels itself instead of relying
-    on position.
+    A target line carries four facts: the price, how many R it is, how far
+    away in the instrument's own units, and the modelled probability of
+    getting there before the stop. The last of those comes from the barrier
+    model corrected by backtest calibration — never from a number chosen to
+    look good.
     """
     lv = res["levels"]
     inst = _inst(res)
     order = res.get("order") or {}
-    entry_note = order.get("label") or ("market" if live else "price now")
+    entry_note = order.get("label") or (i18n.t("at_market", lang) if live
+                                        else i18n.t("price_now", lang))
     if order.get("kind") == "market":
-        entry_note = "at market"
+        entry_note = i18n.t("at_market", lang)
 
-    lines = [f"📍 Entry <b>{_e(_p(lv['entry'], inst))}</b> · {_e(entry_note)}",
-             f"🛑 Stop <b>{_e(_p(lv['stop'], inst))}</b> · "
-             f"{_e(lv.get('risk_display') or lv['risk_points'])}"]
-    for n, (tp, m) in enumerate(zip(lv["tps"], lv["tp_multiples"]), start=1):
-        lines.append(f"🎯 TP{n} <b>{_e(_p(tp, inst))}</b> · {m:g}R")
+    lines = [
+        f"📍 {i18n.t('entry', lang)} <b>{_e(_p(lv['entry'], inst))}</b> · {_e(entry_note)}",
+        f"🛑 {i18n.t('stop', lang)} <b>{_e(_p(lv['stop'], inst))}</b> · "
+        f"{_e(lv.get('risk_display') or lv['risk_points'])}",
+        "",
+    ]
+
+    pr = res.get("probability") or {}
+    odds = {round(float(row["r"]), 3): row["p"] for row in pr.get("targets", [])}
+    pts = lv.get("tp_points_display") or []
+    for n, (tp, m) in enumerate(zip(lv["tps"], lv["tp_multiples"])):
+        icon = TP_ICON[n] if n < len(TP_ICON) else "🎯"
+        bits = [f"{m:g}R"]
+        if n < len(pts):
+            bits.append(pts[n])
+        p = odds.get(round(float(m), 3))
+        if p is not None:
+            bits.append(f"{p * 100:.0f}%")
+        lines.append(f"{icon} TP{n + 1} <b>{_e(_p(tp, inst))}</b> · " + " · ".join(bits))
     return "\n".join(lines)
 
 
-def _headline_numbers(res: dict) -> str:
+def _headline_numbers(res: dict, lang: str = i18n.EN) -> str:
     """One line. Confidence, the odds on the first target, expectancy."""
     conf = res.get("confidence") or {}
     pr = res.get("probability")
     bits = []
     if conf:
-        bits.append(f"Confidence <b>{int(conf.get('value', 0))}%</b>")
+        bits.append(f"{i18n.t('confidence', lang)} <b>{int(conf.get('value', 0))}%</b>")
     if pr:
-        bits.append(f"Odds {pr['targets'][0]['p'] * 100:.0f}%")
-        bits.append(f"Exp {pr['expectancy_r']:+.2f}R")
+        bits.append(f"{i18n.t('odds', lang)} {pr['targets'][0]['p'] * 100:.0f}%")
+        bits.append(f"{i18n.t('exp', lang)} {pr['expectancy_r']:+.2f}R")
     return " · ".join(bits)
+
+
+def _context_line(res: dict, lang: str = i18n.EN) -> str:
+    """Which book is open, and how much room the tape has. Both measured."""
+    sess = SESS.current_session(res.get("as_of"))
+    vol = SESS.classify_volatility(res.get("atr_ratio"))
+    bits = []
+    if sess:
+        bits.append(f"{sess['emoji']} {i18n.label(sess['label'], lang)}")
+    else:
+        bits.append(f"🌙 {i18n.t('market_closed', lang)}")
+    if vol:
+        bits.append(f"{vol['emoji']} {i18n.label(vol['label'], lang)}")
+    return " · ".join(bits)
+
+
+def _disclaimer(lang: str = i18n.EN) -> str:
+    """Bold on the word and on DYOR, underline on the sentence itself."""
+    return (f"⚠️ <b>Disclaimer:</b> <u>{_e(i18n.t('disclaimer', lang))}</u> "
+            f"<b>DYOR</b>.")
 
 
 def _needs(res: dict, limit: int = 3) -> str:
@@ -112,37 +159,50 @@ def _needs(res: dict, limit: int = 3) -> str:
 # --------------------------------------------------------------------------- #
 #  Compact — the default
 # --------------------------------------------------------------------------- #
-def _compact(symbol: str, res: dict) -> str:
+def _compact(symbol: str, res: dict, lang: str = i18n.EN) -> str:
     dec = res["decision"]
+    status = res.get("status") or dec
+    icon = STATUS_ICON.get(status, "⏳")
 
     if res["vetoes"]:
-        out = f"🚫 <b>NO TRADE · {_e(symbol)}</b>\n"
-        out += f"🕐 {_e(_subhead(res, with_price=True))}\n\n"
+        out = f"🚫 <b>{i18n.t('no_trade', lang)} · {_e(symbol)}</b>\n"
+        out += f"🕐 {_e(_subhead(res, with_price=True))}\n"
+        out += _context_line(res, lang) + "\n\n"
         for v in res["vetoes"][:2]:
             out += f"• {_e(v)}\n"
-        return out
+        return out + "\n" + _disclaimer(lang) + "\n"
 
     direction = DIR_NAME[res["direction"]] if res["direction"] else ""
 
-    if dec == "ENTRY":
+    if dec == "ENTRY" and status in ("ENTRY", "ACTIVE"):
         out = f"{DIR_ICON.get(direction, '🟢')} <b>{_e(direction)} · {_e(symbol)}</b>\n"
     elif dec == "WAIT":
-        out = f"⏳ <b>WAIT · {_e(direction)} setup · {_e(symbol)}</b>\n"
+        out = (f"{icon} <b>{i18n.t('wait', lang)} · {_e(direction)} "
+               f"{i18n.t('setup', lang)} · {_e(symbol)}</b>\n")
+    elif dec == "ENTRY":
+        out = f"{icon} <b>{_e(status)} · {_e(direction)} · {_e(symbol)}</b>\n"
     else:
-        out = f"🚫 <b>NO TRADE · {_e(symbol)}</b>\n"
+        out = f"🚫 <b>{i18n.t('no_trade', lang)} · {_e(symbol)}</b>\n"
 
     lv = res["levels"]
     has_plan = bool(lv) and dec in ("ENTRY", "WAIT")
-    out += f"🕐 {_e(_subhead(res, with_price=not has_plan))}\n\n"
+    out += f"🕐 {_e(_subhead(res, with_price=not has_plan))}\n"
+    out += _context_line(res, lang) + "\n\n"
 
     if has_plan:
-        out += _levels_lines(res, live=dec == "ENTRY") + "\n\n"
+        out += _levels_lines(res, live=dec == "ENTRY", lang=lang) + "\n\n"
         rr = max(lv["tp_multiples"])
-        size = (f"<b>{lv['lots']} lots</b> · " if lv.get("lots") is not None
-                else "")
-        out += f"💰 {size}{_cash(lv['risk_cash'])} risk · 1:{rr:g} R:R\n"
+        risk_txt = res.get("risk_display") or _cash(lv["risk_cash"])
+        if lv.get("lots") is not None:
+            out += (f"💰 <b>{M.fmt_lots(lv['lots'])} {i18n.t('lots', lang)}</b> · "
+                    f"{_e(risk_txt)} {i18n.t('risk', lang)} · 1:{rr:g} R:R\n")
+        else:
+            out += f"💰 {_e(risk_txt)} {i18n.t('risk', lang)} · 1:{rr:g} R:R\n"
+            if lv.get("lots_below_min"):
+                out += (f"⚠️ <i>"
+                        f"{_e(i18n.t('lot_too_small', lang, min=M.C.LOT_MIN))}</i>\n")
 
-    nums = _headline_numbers(res)
+    nums = _headline_numbers(res, lang)
     if nums:
         out += f"📊 {nums}\n"
 
@@ -150,18 +210,19 @@ def _compact(symbol: str, res: dict) -> str:
     if dec != "ENTRY":
         needs = _needs(res)
         if needs:
-            out += f"🔍 Needs: {_e(needs)}\n"
-    if dec == "WAIT" and order.get("note"):
-        note = order["note"]
+            out += f"🔍 {i18n.t('needs', lang)}: {_e(needs)}\n"
+    if dec == "WAIT" and (order.get("note_key") or order.get("note")):
+        note = (i18n.t(order["note_key"], lang, **(order.get("note_args") or {}))
+                if order.get("note_key") else order["note"])
         out += (f"ℹ️ <i>{_e(note[0].upper() + note[1:])}. "
-                f"Levels move until it fills.</i>\n")
+                f"{_e(i18n.t('levels_move', lang))}</i>\n")
     elif dec == "WAIT":
-        out += "ℹ️ <i>Not live — levels move until it triggers.</i>\n"
+        out += f"ℹ️ <i>{_e(i18n.t('not_live', lang))}</i>\n"
 
     if res.get("news_warning"):
-        out += "\n⚠️ <i>High-impact US data often lands this hour.</i>\n"
+        out += f"\n⚠️ <i>{_e(i18n.t('news_hour', lang))}</i>\n"
 
-    return out
+    return out + "\n" + _disclaimer(lang) + "\n"
 
 
 # --------------------------------------------------------------------------- #
@@ -244,8 +305,9 @@ def _verbose(symbol: str, res: dict) -> str:
     return out
 
 
-def render(symbol: str, res: dict, verbose: bool = False) -> str:
-    return _verbose(symbol, res) if verbose else _compact(symbol, res)
+def render(symbol: str, res: dict, verbose: bool = False,
+           lang: str = i18n.EN) -> str:
+    return _verbose(symbol, res) if verbose else _compact(symbol, res, lang)
 
 
 # --------------------------------------------------------------------------- #

@@ -53,8 +53,27 @@ def _slow_period(df: pd.DataFrame) -> int:
     return max(60, len(df) // 2)
 
 
+# snapshot() is the hot path: a backtest calls it three times per bar, once
+# per timeframe, and it recomputes ADX, RSI, ATR, EMAs and MACD every time.
+# The higher timeframes barely move between calls — on intraday the 1h frame
+# changes once every four entry bars and the 4h once every sixteen — so the
+# same answer is computed and thrown away over and over.
+#
+# Keyed on the frame's identity rather than the object: last timestamp,
+# length, and last close. Two frames agreeing on all three are the same slice
+# everywhere in this codebase. Live signals always miss (each call has a new
+# last bar), so this changes nothing about what a user sees; it only stops
+# the backtester doing the same arithmetic thousands of times.
+_SNAP_CACHE: dict = {}
+_SNAP_CACHE_MAX = 512
+
+
 def snapshot(df: pd.DataFrame) -> dict:
     close = df["close"]
+    key = (df.index[-1], len(df), float(close.iloc[-1]))
+    hit = _SNAP_CACHE.get(key)
+    if hit is not None:
+        return hit
     slow_n = _slow_period(df)
 
     e20 = ind.ema(close, 20)
@@ -68,7 +87,7 @@ def snapshot(df: pd.DataFrame) -> dict:
     atr_now = float(a.iloc[-1])
     atr_median = float(a.tail(100).median()) if len(a) >= 30 else atr_now
 
-    return {
+    out = {
         "df": df,
         "time": df.index[-1],
         "close": float(close.iloc[-1]),
@@ -91,6 +110,10 @@ def snapshot(df: pd.DataFrame) -> dict:
         "macd_hist": macd_df["hist"],
         "candle": ind.candle_shape(df),
     }
+    if len(_SNAP_CACHE) >= _SNAP_CACHE_MAX:
+        _SNAP_CACHE.clear()          # cheap bound; this is a cache, not a store
+    _SNAP_CACHE[key] = out
+    return out
 
 
 def _direction_from_emas(s: dict) -> int:

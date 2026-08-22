@@ -212,6 +212,26 @@ JOURNAL_MAX_ENTRIES = int(_get("JOURNAL_MAX_ENTRIES", "2000"))
 # Bars after entry to wait before giving up on a signal that never resolved.
 JOURNAL_MAX_BARS = int(_get("JOURNAL_MAX_BARS", "120"))
 
+# ------------------------------------------------------------- strategies
+# Crimson Flow — momentum breakout. Weights total 100.
+CRIMSON_CHANNEL = int(_get("CRIMSON_CHANNEL", "20"))     # Donchian lookback
+CRIMSON_CLOSE_POS = float(_get("CRIMSON_CLOSE_POS", "0.66"))  # close in own range
+CRIMSON_ATR_EXPANSION = float(_get("CRIMSON_ATR_EXPANSION", "1.05"))
+CRIMSON_WEIGHTS = {
+    "bias_align": 20, "breakout": 30, "adx_rising": 18,
+    "close_position": 17, "atr_expansion": 10, "session": 5,
+}
+
+# Kage Protocol — volatility squeeze. Weights total 100.
+KAGE_BB_PERIOD = int(_get("KAGE_BB_PERIOD", "20"))
+KAGE_BB_K = float(_get("KAGE_BB_K", "2.0"))
+KAGE_SQUEEZE_LOOKBACK = int(_get("KAGE_SQUEEZE_LOOKBACK", "120"))
+KAGE_SQUEEZE_PCTILE = float(_get("KAGE_SQUEEZE_PCTILE", "0.25"))
+KAGE_WEIGHTS = {
+    "squeeze": 28, "expansion": 32, "bias_agree": 20,
+    "rsi_room": 12, "session": 8,
+}
+
 # ------------------------------------------------------------- volatility
 # ATR against its own recent median on the entry timeframe. Real measurement,
 # bucketed for display; nothing here is assigned by mood.

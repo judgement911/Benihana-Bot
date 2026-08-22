@@ -32,6 +32,12 @@ import money as M
 import probability as prob
 
 LONG, SHORT, FLAT = 1, -1, 0
+
+# One place for "how long is a bar". The staleness gate, the lifecycle
+# tracker and every strategy read it from here.
+TF_SECONDS = {"5min": 300, "15min": 900, "30min": 1800, "1h": 3600,
+              "2h": 7200, "4h": 14400, "1day": 86400, "1week": 604800}
+STALE_BARS = 4
 DIR_NAME = {LONG: "BUY", SHORT: "SELL", FLAT: "NONE"}
 
 
@@ -75,6 +81,10 @@ def snapshot(df: pd.DataFrame) -> dict:
         "atr_median": atr_median,
         "atr_ratio": atr_now / atr_median if atr_median else 1.0,
         "adx": float(adx_df["adx"].iloc[-1]),
+        # Previous reading, so a ruleset can ask whether the trend is
+        # strengthening rather than only how strong it is right now.
+        "adx_prev": float(adx_df["adx"].iloc[-2]) if len(adx_df) > 1
+                    else float(adx_df["adx"].iloc[-1]),
         "plus_di": float(adx_df["plus_di"].iloc[-1]),
         "minus_di": float(adx_df["minus_di"].iloc[-1]),
         "rsi": r,
@@ -147,6 +157,90 @@ def _in_session(now: datetime, spec: C.ModeSpec) -> bool:
         if sh * 60 + sm <= minutes <= eh * 60 + em:
             return True
     return False
+
+
+def _build_levels(entry_px: float, *, direction, highs, lows, atr_e,
+                  spec, inst, balance, risk_pct, risk_usd=None) -> tuple[dict, Optional[float], bool]:
+    """Stop, targets and size for an entry at `entry_px`.
+    Shared by every strategy. The rules that pick a direction differ; the
+    arithmetic that turns a direction into a risked position does not.
+
+
+    Structure places the stop — the swing the trade is wrong beneath — but
+    only inside the band the mode's volatility justifies. Before this was
+    bounded, a swing low 90 points away simply became a 90-point stop.
+    """
+    buffer = C.SL_STRUCT_BUFFER * atr_e
+    floor_d = spec.atr_sl_mult * atr_e
+    ceil_d = spec.max_sl_mult * atr_e
+
+    if direction == LONG:
+        struct = (lows[0][1] - buffer) if lows else entry_px - floor_d
+        raw = min(struct, entry_px - floor_d)         # further of the two
+        sl = max(raw, entry_px - ceil_d)              # but inside the band
+        opposing = highs[0][1] if highs and highs[0][1] > entry_px else None
+    else:
+        struct = (highs[0][1] + buffer) if highs else entry_px + floor_d
+        raw = max(struct, entry_px + floor_d)
+        sl = min(raw, entry_px + ceil_d)
+        opposing = lows[0][1] if lows and lows[0][1] < entry_px else None
+
+    clamped = abs(raw - sl) > 1e-9
+
+    d = inst.digits
+    # Size from the levels as PRINTED, not the unrounded ones. Subtracting
+    # the stop from the entry on screen has to give you the risk on screen,
+    # and the lot size has to match that same number.
+    entry_r, stop_r = round(float(entry_px), d), round(float(sl), d)
+    risk_shown = abs(entry_r - stop_r)
+    tps = [entry_r + direction * risk_shown * m for m in spec.tp_multiples]
+
+    rr = None
+    if opposing is not None and risk_shown > 0:
+        rr = abs(opposing - entry_r) / risk_shown
+
+    # An explicit per-signal risk wins over the account percentage: the
+    # user asked for this many dollars at stake, not this fraction.
+    risk_cash = (float(risk_usd) if risk_usd is not None
+                 else balance * risk_pct / 100.0)
+
+    # Risk per lot lands in the quote currency; convert before dividing, or
+    # a 23,600-yen stop on USD/JPY reads as a 23,600-dollar stop and the
+    # size collapses to zero.
+    usd_per_quote = inst.usd_per_quote(entry_r)
+    lots_raw = None
+    if risk_shown > 0 and usd_per_quote:
+        risk_per_lot_usd = risk_shown * inst.contract_size * usd_per_quote
+        if risk_per_lot_usd > 0:
+            lots_raw = risk_cash / risk_per_lot_usd
+    # Brokers take discrete lot steps, so 0.0457 is not an order. Round
+    # DOWN — rounding up would risk more than the user asked for.
+    lots, below_min = M.round_lots(lots_raw)
+
+    levels = {
+        "entry": entry_r,
+        "stop": stop_r,
+        "risk_points": round(risk_shown, d),
+        "risk_display": inst.fmt_risk(risk_shown),
+        "risk_pct": round(100.0 * risk_shown / entry_r, 3) if entry_r else None,
+        "stop_atr": round(risk_shown / atr_e, 2) if atr_e else None,
+        "stop_clamped": clamped,
+        "tps": [round(float(x), d) for x in tps],
+        "tp_multiples": spec.tp_multiples,
+        "tp_points": [round(risk_shown * m, d) for m in spec.tp_multiples],
+        "tp_points_display": [inst.fmt_risk(risk_shown * m)
+                              for m in spec.tp_multiples],
+        "room_rr": round(float(rr), 2) if rr else None,
+        "next_obstacle": round(float(opposing), d) if opposing else None,
+        # Small sizes need more than two decimals or a 0.074-lot gold trade
+        # prints as 0.07 and quietly risks 5% less than you asked for.
+        "lots": lots,
+        "lots_raw": None if lots_raw is None else round(float(lots_raw), 4),
+        "lots_below_min": below_min,
+        "risk_cash": round(float(risk_cash), 2),
+        "atr": round(float(atr_e), d),
+    }
+    return levels, rr, clamped
 
 
 # --------------------------------------------------------------------------- #
@@ -294,9 +388,8 @@ def evaluate(
         vetoes.append(f"Entry RSI {rsi_now:.0f} — that is chasing, not a pullback")
 
     age = (now_utc - e["time"].to_pydatetime()).total_seconds()
-    tf_seconds = {"5min": 300, "15min": 900, "1h": 3600, "4h": 14400,
-                  "1day": 86400, "1week": 604800}.get(spec.entry_tf, 900)
-    if age > tf_seconds * 4:
+    tf_seconds = TF_SECONDS.get(spec.entry_tf, 900)
+    if age > tf_seconds * STALE_BARS:
         vetoes.append(f"Data is stale ({age / 60:.0f} min old) — market likely closed")
 
     if vetoes:
@@ -455,83 +548,10 @@ def evaluate(
 
     # ------------------------------------------------------------------ LEVELS
     def build_levels(entry_px: float) -> tuple[dict, Optional[float], bool]:
-        """Stop, targets and size for an entry at `entry_px`.
-
-        Structure places the stop — the swing the trade is wrong beneath — but
-        only inside the band the mode's volatility justifies. Before this was
-        bounded, a swing low 90 points away simply became a 90-point stop.
-        """
-        buffer = C.SL_STRUCT_BUFFER * atr_e
-        floor_d = spec.atr_sl_mult * atr_e
-        ceil_d = spec.max_sl_mult * atr_e
-
-        if direction == LONG:
-            struct = (lows[0][1] - buffer) if lows else entry_px - floor_d
-            raw = min(struct, entry_px - floor_d)         # further of the two
-            sl = max(raw, entry_px - ceil_d)              # but inside the band
-            opposing = highs[0][1] if highs and highs[0][1] > entry_px else None
-        else:
-            struct = (highs[0][1] + buffer) if highs else entry_px + floor_d
-            raw = max(struct, entry_px + floor_d)
-            sl = min(raw, entry_px + ceil_d)
-            opposing = lows[0][1] if lows and lows[0][1] < entry_px else None
-
-        clamped = abs(raw - sl) > 1e-9
-
-        d = inst.digits
-        # Size from the levels as PRINTED, not the unrounded ones. Subtracting
-        # the stop from the entry on screen has to give you the risk on screen,
-        # and the lot size has to match that same number.
-        entry_r, stop_r = round(float(entry_px), d), round(float(sl), d)
-        risk_shown = abs(entry_r - stop_r)
-        tps = [entry_r + direction * risk_shown * m for m in spec.tp_multiples]
-
-        rr = None
-        if opposing is not None and risk_shown > 0:
-            rr = abs(opposing - entry_r) / risk_shown
-
-        # An explicit per-signal risk wins over the account percentage: the
-        # user asked for this many dollars at stake, not this fraction.
-        risk_cash = (float(risk_usd) if risk_usd is not None
-                     else balance * risk_pct / 100.0)
-
-        # Risk per lot lands in the quote currency; convert before dividing, or
-        # a 23,600-yen stop on USD/JPY reads as a 23,600-dollar stop and the
-        # size collapses to zero.
-        usd_per_quote = inst.usd_per_quote(entry_r)
-        lots_raw = None
-        if risk_shown > 0 and usd_per_quote:
-            risk_per_lot_usd = risk_shown * inst.contract_size * usd_per_quote
-            if risk_per_lot_usd > 0:
-                lots_raw = risk_cash / risk_per_lot_usd
-        # Brokers take discrete lot steps, so 0.0457 is not an order. Round
-        # DOWN — rounding up would risk more than the user asked for.
-        lots, below_min = M.round_lots(lots_raw)
-
-        levels = {
-            "entry": entry_r,
-            "stop": stop_r,
-            "risk_points": round(risk_shown, d),
-            "risk_display": inst.fmt_risk(risk_shown),
-            "risk_pct": round(100.0 * risk_shown / entry_r, 3) if entry_r else None,
-            "stop_atr": round(risk_shown / atr_e, 2) if atr_e else None,
-            "stop_clamped": clamped,
-            "tps": [round(float(x), d) for x in tps],
-            "tp_multiples": spec.tp_multiples,
-            "tp_points": [round(risk_shown * m, d) for m in spec.tp_multiples],
-            "tp_points_display": [inst.fmt_risk(risk_shown * m)
-                                  for m in spec.tp_multiples],
-            "room_rr": round(float(rr), 2) if rr else None,
-            "next_obstacle": round(float(opposing), d) if opposing else None,
-            # Small sizes need more than two decimals or a 0.074-lot gold trade
-            # prints as 0.07 and quietly risks 5% less than you asked for.
-            "lots": lots,
-            "lots_raw": None if lots_raw is None else round(float(lots_raw), 4),
-            "lots_below_min": below_min,
-            "risk_cash": round(float(risk_cash), 2),
-            "atr": round(float(atr_e), d),
-        }
-        return levels, rr, clamped
+        return _build_levels(entry_px, direction=direction, highs=highs,
+                             lows=lows, atr_e=atr_e, spec=spec, inst=inst,
+                             balance=balance, risk_pct=risk_pct,
+                             risk_usd=risk_usd)
 
     out["levels"], room_rr, _ = build_levels(price)
 

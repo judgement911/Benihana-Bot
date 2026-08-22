@@ -183,3 +183,80 @@ def bollinger(close: pd.Series, n: int = 20, k: float = 2.0) -> pd.DataFrame:
         # Width relative to price, so it is comparable across instruments.
         "width": (upper - lower) / mid.replace(0, pd.NA),
     })
+
+
+def sr_levels(df: pd.DataFrame, atr_val: float, left: int = 3, right: int = 3,
+              lookback: int = 200, tol_atr: float = 0.45,
+              min_touches: int = 2) -> list[dict]:
+    """Support and resistance as PRICE CLUSTERS, not single pivots.
+
+    A lone swing point is noise; a level is a price the market has turned at
+    more than once. Pivots within `tol_atr` ATR of each other are merged, and
+    the count of merged pivots is the level's touch count — the thing that
+    makes it worth watching, and the thing stops pile up behind.
+
+    Returns levels newest-first with: price, touches, kind, last_index.
+    """
+    piv = pivots(df.tail(lookback), left=left, right=right)
+    tol = max(tol_atr * float(atr_val), 1e-12)
+
+    raw = []
+    for i, row in enumerate(piv.itertuples()):
+        if getattr(row, "pivot_high", False):
+            raw.append((float(df["high"].tail(lookback).iloc[i]), "resistance", i))
+        if getattr(row, "pivot_low", False):
+            raw.append((float(df["low"].tail(lookback).iloc[i]), "support", i))
+
+    clusters: list[dict] = []
+    for price, kind, idx in raw:
+        for c in clusters:
+            if abs(c["price"] - price) <= tol:
+                # Weighted mean keeps the level where the touches actually are.
+                c["price"] = (c["price"] * c["touches"] + price) / (c["touches"] + 1)
+                c["touches"] += 1
+                c["last_index"] = max(c["last_index"], idx)
+                c["kinds"].add(kind)
+                break
+        else:
+            clusters.append({"price": price, "touches": 1, "last_index": idx,
+                             "kinds": {kind}})
+
+    out = [c for c in clusters if c["touches"] >= min_touches]
+    for c in out:
+        c["kind"] = "both" if len(c["kinds"]) > 1 else next(iter(c["kinds"]))
+        c.pop("kinds")
+    return sorted(out, key=lambda c: -c["last_index"])
+
+
+def sweep(bar, level: float, direction: int, atr_val: float,
+          min_depth_atr: float = 0.15) -> dict | None:
+    """Did this bar run the stops beyond `level` and then reject?
+
+    The pattern being detected is a liquidity grab: price trades through a
+    level where resting stops sit, triggers them, and closes back on the
+    original side. A bar that merely closes through the level is a breakout,
+    not a sweep, and returns None.
+
+    direction is the trade being considered: LONG sweeps below support.
+    """
+    depth_needed = min_depth_atr * float(atr_val)
+    if direction > 0:
+        pierced = float(level) - float(bar["low"])
+        reclaimed = float(bar["close"]) > float(level)
+    else:
+        pierced = float(bar["high"]) - float(level)
+        reclaimed = float(bar["close"]) < float(level)
+
+    if pierced < depth_needed or not reclaimed:
+        return None
+
+    rng = float(bar["high"] - bar["low"]) or 1e-12
+    close_pos = ((float(bar["close"]) - float(bar["low"])) / rng if direction > 0
+                 else (float(bar["high"]) - float(bar["close"])) / rng)
+    return {
+        "depth": pierced,
+        "depth_atr": pierced / float(atr_val) if atr_val else 0.0,
+        "close_pos": close_pos,          # 1.0 = closed at the rejecting extreme
+        "range_atr": rng / float(atr_val) if atr_val else 0.0,
+        "extreme": float(bar["low"]) if direction > 0 else float(bar["high"]),
+    }

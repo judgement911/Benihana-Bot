@@ -235,6 +235,25 @@ KAGE_WEIGHTS = {
     "rsi_room": 12, "session": 8,
 }
 
+# Zanshin Sweep — liquidity grab at a tested level. Weights total 100.
+# Every threshold is a round number chosen from the shape of the pattern,
+# NOT tuned against a backtest: the first measurement has to be a test, not
+# a memory of one.
+ZANSHIN_LEVEL_TOL_ATR = float(_get("ZANSHIN_LEVEL_TOL_ATR", "0.45"))
+ZANSHIN_LEVEL_LOOKBACK = int(_get("ZANSHIN_LEVEL_LOOKBACK", "200"))
+ZANSHIN_MIN_TOUCHES = int(_get("ZANSHIN_MIN_TOUCHES", "2"))
+ZANSHIN_MAX_DISTANCE_ATR = float(_get("ZANSHIN_MAX_DISTANCE_ATR", "2.0"))
+ZANSHIN_MIN_DEPTH_ATR = float(_get("ZANSHIN_MIN_DEPTH_ATR", "0.15"))
+ZANSHIN_GOOD_DEPTH_ATR = float(_get("ZANSHIN_GOOD_DEPTH_ATR", "0.35"))
+ZANSHIN_MIN_CLOSE_POS = float(_get("ZANSHIN_MIN_CLOSE_POS", "0.60"))
+ZANSHIN_MIN_RANGE_ATR = float(_get("ZANSHIN_MIN_RANGE_ATR", "1.00"))
+ZANSHIN_VOL_MIN = float(_get("ZANSHIN_VOL_MIN", "0.60"))
+ZANSHIN_VOL_MAX = float(_get("ZANSHIN_VOL_MAX", "2.20"))
+ZANSHIN_WEIGHTS = {
+    "level": 22, "sweep": 20, "reclaim": 20,
+    "expansion": 13, "liquidity": 10, "context": 15,
+}
+
 # ------------------------------------------------------------- volatility
 # ATR against its own recent median on the entry timeframe. Real measurement,
 # bucketed for display; nothing here is assigned by mood.

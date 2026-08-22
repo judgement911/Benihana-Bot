@@ -406,3 +406,155 @@ def get(key: Optional[str]) -> Strategy:
 
 def evaluate(key: Optional[str], *a, **kw) -> dict:
     return get(key).evaluate(*a, **kw)
+
+
+# --------------------------------------------------------------------------- #
+#  Zanshin Sweep — liquidity grab at a level, sized by ATR
+# --------------------------------------------------------------------------- #
+def evaluate_zanshin(entry_df, trend_df, bias_df, spec, now_utc=None,
+                     balance=None, risk_pct=None, instrument=None,
+                     risk_usd=None) -> dict:
+    """Buy where the stops just got taken.
+
+    The pattern is the oldest one in the book: price trades through a level
+    people are defending, triggers the orders resting beyond it, and closes
+    back on the original side. Whoever sold the low has already been filled;
+    the supply is gone. That is what "liquidity" means here, and it is the
+    only sense of it available — no venue publishes an order book for spot
+    gold, and forex volume from a retail feed is a fiction. Rather than
+    dress a volume proxy up as depth, this reads liquidity where it is
+    actually observable: as the stop pools behind levels the market has
+    turned at more than once, and as the sessions when those pools are deep
+    enough to be worth running.
+
+      SUPPORT/RESISTANCE  pivots clustered within 0.45 ATR; a level needs two
+                          touches to exist at all
+      LIQUIDITY           the sweep — pierce the level, close back through it
+      VOLATILITY          two gates: the tape must be in a sane ATR band, and
+                          the sweep bar itself must expand, because a grab
+                          that happens in a dead range is not a grab
+      ATR                 sets the sweep depth threshold, the level tolerance,
+                          and the stop, so every distance scales with the
+                          instrument instead of being a number in points
+
+    The stop sits beyond the sweep's own extreme. That is the honest
+    invalidation: if price returns through the wick, the grab failed and the
+    reason for the trade is gone.
+
+    Nothing here was tuned against a backtest. The thresholds are round
+    numbers picked from the shape of the pattern, so that the first
+    measurement is a test rather than a memory.
+    """
+    out, e, t, b, inst, balance, risk_pct, now_utc = _scaffold(
+        entry_df, trend_df, bias_df, spec, now_utc, balance, risk_pct,
+        instrument, risk_usd, "zanshin")
+    vetoes = _common_vetoes(e, t, b, spec, now_utc, entry_df)
+
+    atr_e = float(e["atr"])
+    ratio = e["atr_ratio"] or 1.0
+    if not (C.ZANSHIN_VOL_MIN <= ratio <= C.ZANSHIN_VOL_MAX):
+        vetoes.append(f"ATR {ratio:.2f}x normal — outside the band a sweep "
+                      f"can be read in")
+    if vetoes:
+        out["vetoes"] = vetoes
+        return out
+
+    levels = ind.sr_levels(entry_df, atr_e, tol_atr=C.ZANSHIN_LEVEL_TOL_ATR,
+                           lookback=C.ZANSHIN_LEVEL_LOOKBACK,
+                           min_touches=C.ZANSHIN_MIN_TOUCHES)
+    if not levels:
+        out["vetoes"] = ["No level with two touches — nothing to sweep"]
+        return out
+
+    bar = entry_df.iloc[-1]
+    close = float(e["close"])
+    bias_dir, _ = base._bias_direction(b)
+
+    # Try both directions against every nearby level; take the best sweep.
+    best = None
+    for lv in levels:
+        if abs(close - lv["price"]) > C.ZANSHIN_MAX_DISTANCE_ATR * atr_e:
+            continue
+        for direction in (LONG, SHORT):
+            s = ind.sweep(bar, lv["price"], direction, atr_e,
+                          min_depth_atr=C.ZANSHIN_MIN_DEPTH_ATR)
+            if not s:
+                continue
+            score = s["depth_atr"] + s["close_pos"] + 0.2 * lv["touches"]
+            if best is None or score > best["rank"]:
+                best = {"rank": score, "dir": direction, "level": lv, "sweep": s}
+
+    if best is None:
+        out["vetoes"] = ["No liquidity sweep on this bar"]
+        return out
+
+    direction = best["dir"]
+    lv, sw = best["level"], best["sweep"]
+    reasons, missing = [], []
+
+    def add(key, ok, pts, mx, text):
+        reasons.append({"key": key, "ok": bool(ok), "points": float(pts),
+                        "max": mx, "text": text})
+        if not ok:
+            missing.append(text)
+
+    W = C.ZANSHIN_WEIGHTS
+
+    touches = min(lv["touches"], 4)
+    add("level", True, W["level"] * (0.55 + 0.15 * (touches - 2)), W["level"],
+        f"level at {lv['price']:.5g} held {lv['touches']}x")
+
+    deep = sw["depth_atr"] >= C.ZANSHIN_GOOD_DEPTH_ATR
+    add("sweep", True, W["sweep"] * (1.0 if deep else 0.6), W["sweep"],
+        f"swept {sw['depth_atr']:.2f} ATR through it"
+        + ("" if deep else " — shallow grab"))
+
+    strong = sw["close_pos"] >= C.ZANSHIN_MIN_CLOSE_POS
+    add("reclaim", strong, W["reclaim"] * min(1.0, sw["close_pos"] / C.ZANSHIN_MIN_CLOSE_POS),
+        W["reclaim"],
+        f"closed {sw['close_pos']:.0%} back through the level"
+        + ("" if strong else " — weak reclaim"))
+
+    expanded = sw["range_atr"] >= C.ZANSHIN_MIN_RANGE_ATR
+    add("expansion", expanded, W["expansion"] if expanded else 0, W["expansion"],
+        f"sweep bar spanned {sw['range_atr']:.2f} ATR"
+        + ("" if expanded else " — too quiet to be a real grab"))
+
+    # Liquidity, in the only sense a retail feed can support: the sessions
+    # when the pools behind a level are actually worth running.
+    in_sess = base._in_session(now_utc, spec)
+    add("liquidity", in_sess, W["liquidity"] if in_sess else 0, W["liquidity"],
+        "inside the liquid session" if in_sess
+        else "thin session — sweeps here are often just spread")
+
+    against = bias_dir != FLAT and direction != bias_dir and t["adx"] >= C.ADX_GOOD
+    add("context", not against, 0 if against else W["context"], W["context"],
+        "higher timeframe not fighting it" if not against
+        else f"{spec.trend_tf} trending hard the other way")
+
+    highs, lows = ind.last_swings(entry_df)
+    # The sweep's own extreme is the invalidation, so it becomes the swing the
+    # stop hides behind.
+    if direction == LONG:
+        lows = [(len(entry_df) - 1, sw["extreme"])] + list(lows)
+    else:
+        highs = [(len(entry_df) - 1, sw["extreme"])] + list(highs)
+
+    return _finalise(out, direction=direction, reasons=reasons, missing=missing,
+                     trigger_present=strong and expanded and not against,
+                     e=e, entry_df=entry_df, highs=highs, lows=lows,
+                     atr_e=atr_e, spec=spec, inst=inst, balance=balance,
+                     risk_pct=risk_pct, risk_usd=risk_usd, now_utc=now_utc,
+                     in_session=in_sess, short_history=b["ema_slow_n"] < 200)
+
+
+REGISTRY["zanshin"] = Strategy(
+    "zanshin", "Zanshin Sweep",
+    "Liquidity sweep. Waits for price to run the stops beyond a level that "
+    "has held twice, then close back through it, and takes the reclaim with "
+    "the stop behind the wick.",
+    "Sweep likuiditas. Menunggu harga menyapu stop di balik level yang sudah "
+    "teruji dua kali, lalu close kembali menembusnya, dan masuk dengan stop "
+    "di balik ekor candle.",
+    evaluate_zanshin)
+ORDER = ("ronin", "crimson", "kage", "zanshin")

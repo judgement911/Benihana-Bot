@@ -71,6 +71,19 @@ RESULTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "bakeoff_results.json")
 
 
+# Measured on this codebase: cost tracks the number of bars actually
+# evaluated, which is the sample minus the warmup the slowest timeframe
+# needs before it holds enough candles to read. Reporting a flat number
+# regardless of --bars understated a 5000-bar run by a factor of three.
+_WARMUP_BARS = {"scalp": 300, "intraday": 960, "swing": 1200}
+_SECONDS_PER_BAR = 0.0085
+
+
+def estimate_seconds(bars: int, mode: str) -> float:
+    evaluated = max(0, bars - _WARMUP_BARS.get(mode, 960))
+    return max(2.0, evaluated * _SECONDS_PER_BAR)
+
+
 def _cpu() -> float:
     r = resource.getrusage(resource.RUSAGE_SELF)
     return r.ru_utime + r.ru_stime
@@ -287,9 +300,20 @@ def main() -> int:
     only = [k.strip() for k in args.only.split(",")] if args.only else None
 
     todo = len([k for k in (only or CAND.CANDIDATES) if k not in saved])
-    print(f"Running {todo} candidate(s) over {len(df)} bars. "
-          f"Roughly {todo * 19} CPU-seconds; a free PythonAnywhere account "
-          f"gets 100 a day.\n")
+    each = estimate_seconds(len(df), args.mode)
+    print(f"Running {todo} candidate(s) over {len(df)} bars.")
+    print(f"About {each:.0f}s CPU each, {todo * each:.0f}s in total. A free "
+          f"PythonAnywhere account gets 100 CPU-seconds a day.")
+    if args.budget and each > args.budget:
+        print(f"\nWARNING: one candidate alone needs more than the "
+              f"{args.budget:.0f}s budget, so nothing will finish. Lower "
+              f"--bars or raise --budget.")
+    elif args.budget:
+        per_day = max(1, int(args.budget // each))
+        days = -(-todo // per_day)
+        print(f"At --budget {args.budget:.0f} that is {per_day} per run, "
+              f"so about {days} run(s) to finish.")
+    print()
 
     done = run_bakeoff(df, args.mode, only=only, done=saved, budget=args.budget)
     done["_bars"], done["_mode"] = len(df), args.mode

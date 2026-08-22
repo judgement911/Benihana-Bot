@@ -460,6 +460,258 @@ def check_orders() -> bool:
     return True
 
 
+def check_money() -> bool:
+    """Amount parsing, lot rounding, and the refusal to guess a rate."""
+    import money as M
+    ok = True
+    for text, want_v, want_c in [
+        ("20$", 20.0, "USD"), ("100 USD", 100.0, "USD"), ("22$", 22.0, "USD"),
+        ("300k IDR", 300_000.0, "IDR"), ("17000000 IDR", 17_000_000.0, "IDR"),
+        ("300000 IDR", 300_000.0, "IDR"), ("1.5jt", 1_500_000.0, "IDR"),
+        ("Rp250000", 250_000.0, "IDR"), ("1.000.000", 1_000_000.0, "IDR"),
+    ]:
+        try:
+            v, c = M.parse_amount(text)
+        except M.MoneyError:
+            print(f"  FAIL money rejected {text!r}")
+            ok = False
+            continue
+        if abs(v - want_v) > 0.01 or c != want_c:
+            print(f"  FAIL money {text!r} -> {v} {c}, wanted {want_v} {want_c}")
+            ok = False
+    for bad in ("banana", "", "0$", "-5"):
+        try:
+            M.parse_amount(bad)
+            print(f"  FAIL money accepted {bad!r}")
+            ok = False
+        except M.MoneyError:
+            pass
+
+    # Lots round DOWN and never below the broker minimum.
+    for raw in (0.0457, 0.199, 2.347):
+        lots, below = M.round_lots(raw)
+        if lots is None or lots > raw + 1e-9:
+            print(f"  FAIL lots {raw} -> {lots} (rounded UP)")
+            ok = False
+        if round(lots / C.LOT_STEP) * C.LOT_STEP - lots > 1e-9:
+            print(f"  FAIL lots {raw} -> {lots} is not on the step")
+            ok = False
+    if M.round_lots(0.004) != (None, True):
+        print("  FAIL a size under the minimum must be reported, not rounded up")
+        ok = False
+
+    # An unavailable rate must yield None, never a hardcoded guess.
+    M._rate_cache.clear()
+    def dead_fetch(*a, **k):
+        raise RuntimeError("provider down")
+    if M.to_usd(300_000, "IDR", fetch=dead_fetch) is not None:
+        print("  FAIL money invented an exchange rate when the provider failed")
+        ok = False
+
+    if ok:
+        print("  money: parses both currencies, rounds down, never guesses a rate")
+    return ok
+
+
+def check_users() -> bool:
+    """Settings survive a reload; daily counters roll on the WIB day."""
+    import os, tempfile, importlib
+    C.USERS_FILE = os.path.join(tempfile.mkdtemp(), "u.json")
+    import users as U
+    importlib.reload(U)
+    ok = True
+
+    U.update(11, language="id", strategy="kage", min_confidence=75)
+    importlib.reload(U)
+    got = U.get(11)
+    if (got["language"], got["strategy"], got["min_confidence"]) != ("id", "kage", 75):
+        print(f"  FAIL users did not persist: {got}")
+        ok = False
+
+    U.management_on(11, U.management_defaults(1000, 2, 5, 4, 10))
+    if abs(U.risk_per_trade_usd(U.get(11)) - 20.0) > 1e-9:
+        print("  FAIL risk per trade should be 2% of 1000")
+        ok = False
+    U.management_off(11)
+    if U.risk_per_trade_usd(U.get(11)) is not None:
+        print("  FAIL management off must stop sizing from balance")
+        ok = False
+
+    # A stale day resets the counters rather than carrying them over.
+    U.update(11, day="1999-01-01", day_trades=9, day_pl_usd=-50.0)
+    rolled = U.get(11)
+    if rolled["day_trades"] != 0 or rolled["day_pl_usd"] != 0.0:
+        print(f"  FAIL daily counters did not roll over: {rolled}")
+        ok = False
+
+    if ok:
+        print("  users: settings persist, daily counters roll over")
+    return ok
+
+
+def check_sessions() -> bool:
+    """Sessions come from the clock, volatility from the tape."""
+    import sessions as SS
+    from datetime import datetime, timezone as tz
+    ok = True
+    cases = [(3, "asia"), (9, "london"), (14, "ny"), (22, "sydney")]
+    for hour, want in cases:
+        got = SS.current_session(datetime(2026, 8, 20, hour, tzinfo=tz.utc))
+        if not got or got["key"] != want:
+            print(f"  FAIL session at {hour:02d}:00 UTC -> {got}, wanted {want}")
+            ok = False
+    if SS.current_session(datetime(2026, 8, 22, 14, tzinfo=tz.utc)) is not None:
+        print("  FAIL FX is closed on Saturday")
+        ok = False
+    # Overlap resolves to the deeper book, never to both.
+    overlap = SS.current_session(datetime(2026, 8, 20, 14, tzinfo=tz.utc))
+    if overlap["key"] != "ny":
+        print("  FAIL London/NY overlap must resolve to NY")
+        ok = False
+
+    if SS.classify_volatility(None) is not None:
+        print("  FAIL unknown volatility must stay unknown, not default to a bucket")
+        ok = False
+    order = [SS.classify_volatility(r)["key"] for r in (0.5, 1.0, 2.0)]
+    if order != ["low", "medium", "high"]:
+        print(f"  FAIL volatility buckets out of order: {order}")
+        ok = False
+
+    stamp = SS.stamp(datetime(2026, 8, 20, 13, 15, tzinfo=tz.utc))
+    if stamp != "20:15 UTC+7":
+        print(f"  FAIL clock should read 20:15 UTC+7, got {stamp}")
+        ok = False
+
+    if ok:
+        print("  sessions: clock-derived, overlap resolved, volatility measured")
+    return ok
+
+
+def check_i18n() -> bool:
+    """Both languages must be complete, and placeholders must match."""
+    import re as _re
+    import i18n
+    ok = True
+    for key, row in i18n.S.items():
+        for lang in i18n.LANGS:
+            if not row.get(lang):
+                print(f"  FAIL i18n {key!r} missing {lang}")
+                ok = False
+        en_slots = set(_re.findall(r"{(\w+)}", row.get(i18n.EN, "")))
+        id_slots = set(_re.findall(r"{(\w+)}", row.get(i18n.ID, "")))
+        if en_slots != id_slots:
+            print(f"  FAIL i18n {key!r} placeholders differ: {en_slots} vs {id_slots}")
+            ok = False
+    if ok:
+        print(f"  i18n: {len(i18n.S)} keys complete in both languages")
+    return ok
+
+
+def check_strategies() -> bool:
+    """Three strategies, one contract, genuinely different answers."""
+    import instruments as I
+    import strategies as St
+    from indicators import resample_ohlc
+    ok = True
+    spec = C.MODES["intraday"]
+    df = synth(kind="uptrend", n=2000)
+    df = df / df["close"].iloc[0] * 4500.0
+    e = resample_ohlc(df, "15min"); t = resample_ohlc(df, "1h")
+    b = resample_ohlc(df, "4h")
+    seen = {k: set() for k in St.ORDER}
+    for i in range(400, len(e), 23):
+        now = e.index[i]
+        args = (e.iloc[:i + 1], t[t.index <= now], b[b.index <= now], spec,
+                now.to_pydatetime())
+        for key in St.ORDER:
+            try:
+                r = St.evaluate(key, *args, instrument=I.GOLD)
+            except Exception as exc:
+                print(f"  FAIL {key} raised: {type(exc).__name__}: {exc}")
+                return False
+            if r.get("strategy") != key:
+                print(f"  FAIL {key} did not stamp its own name")
+                ok = False
+            need = ["decision", "direction", "score", "reasons", "price", "as_of"]
+            if not r["vetoes"]:
+                need += ["levels", "order", "confidence", "probability"]
+            for f in need:
+                if r.get(f) is None:
+                    print(f"  FAIL {key} missing {f}")
+                    ok = False
+                    break
+            seen[key].add("veto" if r["vetoes"] else r["decision"])
+    if len(set(map(frozenset, seen.values()))) < 2:
+        print("  FAIL all three strategies behaved identically")
+        ok = False
+    if ok:
+        print(f"  strategies: {len(St.ORDER)} rulesets, one contract, distinct answers")
+    return ok
+
+
+def check_lifecycle() -> bool:
+    """The state machine, including the tie rule and the breakeven move."""
+    import os, tempfile, importlib
+    import pandas as pd
+    C.JOURNAL_FILE = os.path.join(tempfile.mkdtemp(), "lc.json")
+    import journal as J
+    importlib.reload(J)
+    ok = True
+    t0 = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=2)
+
+    def row(**kw):
+        base = dict(id="lc", ts=t0.isoformat(), instrument="xauusd",
+                    mode="intraday", entry_tf="15min", direction=1,
+                    entry=4500.0, stop=4490.0, tps=[4510.0, 4520.0, 4530.0],
+                    tp_multiples=[1.0, 2.0, 3.0], score=80, confidence=75,
+                    p_tp1=0.5, outcome="open", hit_tp1=False, hit_final=False,
+                    r=None, resolved_ts=None, state="waiting",
+                    order_kind="market", tps_hit=[], strategy="ronin",
+                    user_id=1, risk_cash=50.0, risk_points=10.0, lots=0.05,
+                    currency="USD")
+        base.update(kw)
+        return base
+
+    def bars(seq):
+        idx = pd.date_range(t0 + timedelta(minutes=15), periods=len(seq),
+                            freq="15min", tz="UTC")
+        return pd.DataFrame([{"open": o, "high": h, "low": l, "close": c}
+                             for o, h, l, c in seq], index=idx)
+
+    cases = [
+        ("straight stop", [(4500, 4502, 4489, 4490)], "stopped", ["entry", "stop"]),
+        ("all targets", [(4500, 4511, 4499, 4510), (4510, 4521, 4509, 4520),
+                         (4520, 4531, 4519, 4530)], "completed",
+         ["entry", "tp1", "breakeven", "tp2", "tp3", "complete"]),
+        ("tie is a stop", [(4500, 4515, 4485, 4500)], "stopped", ["entry", "stop"]),
+    ]
+    for name, seq, want_state, want_events in cases:
+        r = row()
+        events = [e["kind"] for e in J.advance(r, bars(seq))]
+        if r["state"] != want_state or events != want_events:
+            print(f"  FAIL lifecycle {name}: state={r['state']} events={events}")
+            ok = False
+
+    # A pending order that never trades stays waiting and scores nothing.
+    r = row(order_kind="limit", entry=4400.0)
+    J.advance(r, bars([(4500, 4505, 4495, 4500)]))
+    if r["state"] != "waiting" or r["r"] is not None:
+        print(f"  FAIL an unfilled limit must stay waiting: {r['state']}")
+        ok = False
+
+    # §19: the cooldown is per pair AND style.
+    J._save([row(id="a", state="active", mode="intraday")])
+    if not J.active_signals(instrument="xauusd", mode="intraday"):
+        print("  FAIL an active signal must block its own flow")
+        ok = False
+    if J.active_signals(instrument="xauusd", mode="swing"):
+        print("  FAIL an intraday signal must not block swing")
+        ok = False
+    if ok:
+        print("  lifecycle: states, tie rule, breakeven, per-flow cooldown")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -489,6 +741,10 @@ if __name__ == "__main__":
 
     print("\nUniverse, sizing and presentation:")
     ok &= check_instruments() & check_sizing() & check_views()
+    print("\nSettings, money and language:")
+    ok &= check_money() & check_users() & check_sessions() & check_i18n()
+    print("\nStrategies and lifecycle:")
+    ok &= check_strategies() & check_lifecycle()
     ok &= check_orders()
 
     print("\nSignal journal:")

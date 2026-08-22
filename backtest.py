@@ -45,7 +45,8 @@ RESAMPLE_RULE = {"5min": "5min", "15min": "15min", "1h": "1h",
 WARMUP = 260
 
 
-def run(entry_df: pd.DataFrame, mode: str, window: int = 500) -> tuple:
+def run(entry_df: pd.DataFrame, mode: str, window: int = 500,
+        strategy=None) -> tuple:
     """window = how many bars of history each evaluation sees. 500 is plenty of
     warmup for an EMA200 and keeps this O(n) instead of O(n^2)."""
     spec = C.MODES[mode]
@@ -104,7 +105,9 @@ def run(entry_df: pd.DataFrame, mode: str, window: int = 500) -> tuple:
         if len(t_slice) < 60 or len(b_slice) < 60:
             continue
 
-        res = evaluate(e_slice, t_slice, b_slice, spec, now.to_pydatetime())
+        res = (strategy(e_slice, t_slice, b_slice, spec, now.to_pydatetime())
+               if strategy else
+               evaluate(e_slice, t_slice, b_slice, spec, now.to_pydatetime()))
         if res["decision"] != "ENTRY":
             continue
 

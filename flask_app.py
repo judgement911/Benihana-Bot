@@ -21,14 +21,17 @@ import requests
 from flask import Flask, jsonify, request
 
 import config as C
-import alerts
 import instruments as I
 import journal
-import news
 import probability as prob
 import scanner
+import i18n
+import money
+import motivation
+import strategies
+import strategy as base
+import users
 import view
-from strategy import evaluate
 from market_data import DataError, fetch_ohlc
 
 logging.basicConfig(level=logging.INFO)
@@ -71,6 +74,10 @@ def tg(method: str, **payload):
     except requests.RequestException as exc:
         log.error("Telegram %s network error: %s", method, exc)
         return None
+
+
+def lang_of(user_id: int) -> str:
+    return users.get(user_id).get("language", i18n.EN)
 
 
 def _markup(symbol_key: str, mode: str, verbose: bool) -> dict:
@@ -203,10 +210,14 @@ STRATEGY = (
 
 
 def do_signal(chat_id: int, symbol_key: str, mode: str,
-              message_id: int | None = None, verbose: bool = False):
+              message_id: int | None = None, verbose: bool = False,
+              user_id: int = 0, risk_usd: float = None,
+              risk_display: str = None):
     inst = I.BY_KEY.get(symbol_key, I.GOLD)
     symbol = inst.symbol
     spec = C.MODES[mode]
+    lang = lang_of(user_id) if user_id else i18n.EN
+    u = users.get(user_id) if user_id else users.DEFAULTS
 
     if message_id is None:
         placeholder = send(chat_id, f"⏳ Reading {inst.display} {mode}…")
@@ -216,15 +227,31 @@ def do_signal(chat_id: int, symbol_key: str, mode: str,
         entry_df = fetch_ohlc(symbol, spec.entry_tf, spec.bars)
         trend_df = fetch_ohlc(symbol, spec.trend_tf, spec.bars)
         bias_df = fetch_ohlc(symbol, spec.bias_tf, spec.bars)
-        res = evaluate(entry_df, trend_df, bias_df, spec,
-                       datetime.now(timezone.utc), instrument=inst)
-        text = view.render(inst.display, res, verbose)
-        journal.record(res)   # graded later by /stats
+        res = strategies.evaluate(u["strategy"], entry_df, trend_df, bias_df,
+                                  spec, datetime.now(timezone.utc),
+                                  instrument=inst, risk_usd=risk_usd)
+        res["user_id"] = user_id or None
+        if risk_display:
+            res["risk_display"] = risk_display
+
+        # §13: a confidence floor suppresses the signal rather than dressing
+        # it up. The user asked not to see these.
+        floor = int(u.get("min_confidence") or 0)
+        got = int((res.get("confidence") or {}).get("value") or 0)
+        if floor and res["decision"] == "ENTRY" and got < floor:
+            text = i18n.t("conf_below", lang, got=got, want=floor)
+            deliver(chat_id, message_id, text, symbol_key, mode, verbose)
+            return
+
+        text = view.render(inst.display, res, verbose, lang)
+        if journal.record(res) and user_id:
+            users.update(user_id, day_trades=u["day_trades"] + 1)
     except DataError as exc:
-        text = f"⚠️ <b>Data problem</b>\n{html.escape(str(exc))}"
+        text = f"⚠️ <b>{i18n.t('data_problem', lang)}</b>\n{html.escape(str(exc))}"
     except Exception as exc:  # noqa: BLE001
         log.error("signal failed: %s", traceback.format_exc())
-        text = f"⚠️ Error: <code>{html.escape(type(exc).__name__)}</code>"
+        text = (f"⚠️ {i18n.t('unexpected', lang)}: "
+                f"<code>{html.escape(type(exc).__name__)}</code>")
 
     deliver(chat_id, message_id, text, symbol_key, mode, verbose)
 
@@ -261,7 +288,7 @@ def do_backtest(chat_id: int, symbol_key: str, mode: str, calibrate: bool = Fals
                 text += (f"\n✅ Calibrated {mode} on {len(trades)} trades. Signals "
                          f"now quote measured odds — see /calibration.")
     except DataError as exc:
-        text = f"⚠️ <b>Data problem</b>\n{html.escape(str(exc))}"
+        text = f"⚠️ <b>{i18n.t('data_problem')}</b>\n{html.escape(str(exc))}"
     except Exception as exc:  # noqa: BLE001
         log.error("backtest failed: %s", traceback.format_exc())
         text = f"⚠️ Backtest error: <code>{html.escape(type(exc).__name__)}</code>"
@@ -290,68 +317,8 @@ def do_stats(chat_id: int, symbol_key: str, mode: str = None):
 # --------------------------------------------------------------------------- #
 #  /news — the real calendar, not a guess by the clock
 # --------------------------------------------------------------------------- #
-def do_news(chat_id: int, symbol_key: str):
-    inst = I.BY_KEY.get(symbol_key, I.GOLD)
-    try:
-        send(chat_id, news.format_news(inst))
-    except Exception:  # noqa: BLE001
-        log.error("news failed: %s", traceback.format_exc())
-        send(chat_id, "⚠️ Could not read the calendar just now.")
-
-
-# --------------------------------------------------------------------------- #
-#  /alert — subscribe to high-quality setups
-# --------------------------------------------------------------------------- #
-ALERT_HELP = (
-    "<b>Alerts</b>\n\n"
-    "<code>/alert xauusd scalp</code> — tell me when gold sets up\n"
-    "<code>/alert</code> — what you are watching\n"
-    "<code>/alert off</code> — stop everything\n\n"
-    "You get a message the moment an ENTRY appears at "
-    f"{C.ALERT_MIN_CONFIDENCE}%+ confidence, with entry, stop and targets.\n\n"
-    "<b>One thing you need to know.</b> This bot is a webhook — it only runs "
-    "when Telegram pokes it, so it cannot watch the market on its own. "
-    "Something has to run <code>scan_job.py</code> on a schedule.\n\n"
-    "On PythonAnywhere: <b>Tasks</b> tab → "
-    "<code>python3 ~/Benihana-Bot/scan_job.py</code>. A free account gets one "
-    "task a day, so alerts fire once daily. Hourly needs a paid plan, or run "
-    "the job from any machine that stays on."
-)
-
-
-def do_alert(chat_id: int, args: list):
-    words = [a.lower().lstrip("/") for a in args]
-
-    if any(w in ("off", "stop", "clear", "none") for w in words):
-        n = alerts.remove(chat_id)
-        send(chat_id, f"Cleared {n} alert{'s' if n != 1 else ''}." if n
-             else "You had no alerts set.")
-        return
-    if not args:
-        send(chat_id, alerts.format_list(chat_id))
-        return
-
-    symbol_key, mode, bad = parse_args(args, default_mode="intraday")
-    if bad:
-        send(chat_id, f"Don't know <b>{html.escape(bad)}</b>. Try /symbols.")
-        return
-    inst = I.BY_KEY[symbol_key]
-    added = alerts.add(chat_id, symbol_key, mode)
-    if not added:
-        send(chat_id, f"Already watching {inst.display} {mode}.")
-        return
-    send(chat_id,
-         f"🔔 Watching <b>{inst.display}</b> on <b>{mode}</b>.\n\n"
-         f"You will get the full signal — entry, stop, targets — as soon as "
-         f"one appears at {C.ALERT_MIN_CONFIDENCE}%+ confidence.\n\n"
-         f"<i>Delivery needs the scan job running. /alerthelp explains.</i>")
-
-
-# --------------------------------------------------------------------------- #
-#  /crazymode — sweep the board
-# --------------------------------------------------------------------------- #
-def do_crazymode(chat_id: int, mode: str, keys: list = None,
-                 message_id: int | None = None):
+def do_scan(chat_id: int, user_id: int, mode: str, keys: list = None,
+            message_id: int | None = None):
     keys = keys or C.SCAN_SYMBOLS
     keys = [k for k in keys if k in I.BY_KEY][:C.CRAZY_MAX_SYMBOLS]
     if not keys:
@@ -362,12 +329,14 @@ def do_crazymode(chat_id: int, mode: str, keys: list = None,
     mid = (placeholder or {}).get("result", {}).get("message_id")
 
     try:
-        result = scanner.scan(keys, mode, fetch_ohlc, log=log.warning)
+        strat = users.get(user_id)["strategy"]
+        result = scanner.scan(keys, mode, fetch_ohlc, log=log.warning,
+                              strategy=strat)
         text = scanner.format_scan(result)
         for res in scanner.tradeable(result["rows"]):
             journal.record(res)
     except Exception:  # noqa: BLE001
-        log.error("crazymode failed: %s", traceback.format_exc())
+        log.error("scan failed: %s", traceback.format_exc())
         text = "⚠️ Scan failed. Check the log."
     deliver(chat_id, mid, text, "xauusd", mode)
 
@@ -389,6 +358,331 @@ def do_symbols(chat_id: int):
     send(chat_id, out)
 
 
+# --------------------------------------------------------------------------- #
+#  Settings commands
+# --------------------------------------------------------------------------- #
+def do_language(chat_id: int, user_id: int, args: list[str]):
+    want = (args[0].lower() if args else "")
+    if want in ("english", "en", "inggris"):
+        users.update(user_id, language=i18n.EN)
+        send(chat_id, i18n.t("lang_set", i18n.EN))
+    elif want in ("bahasa", "indonesia", "id", "indonesian"):
+        users.update(user_id, language=i18n.ID)
+        send(chat_id, i18n.t("lang_set", i18n.ID))
+    else:
+        send(chat_id, i18n.t("lang_usage", lang_of(user_id)))
+
+
+def do_setconf(chat_id: int, user_id: int, args: list[str]):
+    lang = lang_of(user_id)
+    raw = (args[0].lower().rstrip("%") if args else "")
+    if raw in ("off", "0", "none"):
+        users.update(user_id, min_confidence=0)
+        send(chat_id, i18n.t("conf_cleared", lang))
+        return
+    try:
+        n = int(raw)
+        if not 0 <= n <= 99:
+            raise ValueError
+    except ValueError:
+        send(chat_id, i18n.t("conf_usage", lang))
+        return
+    users.update(user_id, min_confidence=n)
+    send(chat_id, i18n.t("conf_set", lang, n=n))
+
+
+def do_strategy(chat_id: int, user_id: int, args: list[str]):
+    lang = lang_of(user_id)
+    u = users.get(user_id)
+    pick = (args[0].strip().lower() if args else "")
+
+    chosen = None
+    if pick.isdigit() and 1 <= int(pick) <= len(strategies.ORDER):
+        chosen = strategies.ORDER[int(pick) - 1]
+    elif pick in strategies.REGISTRY:
+        chosen = pick
+    elif pick:
+        for k, s in strategies.REGISTRY.items():
+            if pick in s.name.lower():
+                chosen = k
+                break
+
+    if chosen:
+        users.update(user_id, strategy=chosen)
+        s = strategies.REGISTRY[chosen]
+        send(chat_id, f"⚔️ <b>{html.escape(s.name)}</b> "
+                      f"{i18n.t('strategy_selected', lang)}")
+        return
+
+    out = f"⚔️ <b>{i18n.t('strategies_title', lang)}</b>\n\n"
+    for n, key in enumerate(strategies.ORDER, start=1):
+        s = strategies.REGISTRY[key]
+        mark = " ✅" if key == u["strategy"] else ""
+        blurb = s.blurb_id if lang == i18n.ID else s.blurb_en
+        out += f"<b>{n}. {html.escape(s.name)}</b>{mark}\n{html.escape(blurb)}\n\n"
+    out += i18n.t("strategy_howto", lang)
+    send(chat_id, out)
+
+
+def do_motivation(chat_id: int, user_id: int):
+    send(chat_id, f"💭 <i>{html.escape(motivation.pick(user_id, lang_of(user_id)))}</i>")
+
+
+def do_settings(chat_id: int, user_id: int):
+    lang = lang_of(user_id)
+    u = users.get(user_id)
+    s = strategies.REGISTRY[u["strategy"]]
+    m = u.get("management") or {}
+    lines = [f"⚙️ <b>{i18n.t('settings_title', lang)}</b>", ""]
+    lines.append(f"🌐 {i18n.t('language', lang)}: "
+                 f"{'English' if u['language'] == i18n.EN else 'Bahasa Indonesia'}")
+    lines.append(f"⚔️ {i18n.t('strategy', lang)}: {html.escape(s.name)}")
+    lines.append(f"📊 {i18n.t('min_conf', lang)}: "
+                 + (f"{u['min_confidence']}%" if u["min_confidence"] else i18n.t("off", lang)))
+    risk = u.get("risk_amount")
+    lines.append(f"💰 {i18n.t('default_risk', lang)}: "
+                 + (money.fmt(risk["value"], risk["currency"]) if risk
+                    else i18n.t("not_set", lang)))
+    lines.append(f"🛡️ {i18n.t('management', lang)}: "
+                 + (i18n.t("on", lang) if m.get("enabled") else i18n.t("off", lang)))
+    send(chat_id, "\n".join(lines))
+
+
+def do_status(chat_id: int, user_id: int):
+    lang = lang_of(user_id)
+    u = users.get(user_id)
+    m = u.get("management") or {}
+    live = journal.active_signals(user_id=user_id)
+    lines = [f"📡 <b>{i18n.t('status_title', lang)}</b>", ""]
+    lines.append(f"{i18n.t('active_signals', lang)}: <b>{len(live)}</b>")
+    lines.append(f"{i18n.t('trades_today', lang)}: <b>{u['day_trades']}</b>"
+                 + (f" / {m['max_daily_trades']}" if m.get("enabled") else ""))
+    if m.get("enabled"):
+        lines.append("")
+        lines.append(f"🛡️ {i18n.t('balance', lang)}: ${m['balance_usd']:,.2f}")
+        lines.append(f"📉 {i18n.t('day_pl', lang)}: {u['day_pl_usd']:+,.2f}")
+        lines.append(f"🎯 {i18n.t('profit_target', lang)}: +{m['profit_target_pct']}%")
+    send(chat_id, "\n".join(lines))
+
+
+def do_signals_list(chat_id: int, user_id: int):
+    lang = lang_of(user_id)
+    live = journal.active_signals(user_id=user_id)
+    if not live:
+        send(chat_id, i18n.t("no_active", lang))
+        return
+    out = f"📡 <b>{i18n.t('active_signals', lang)}</b>\n\n"
+    for r in live:
+        inst = I.BY_KEY.get(r.get("instrument") or "")
+        name = inst.display if inst else (r.get("instrument") or "?").upper()
+        state = journal.STATUS_LABEL.get(r.get("state"), "WAIT")
+        icon = view.STATUS_ICON.get(state, "⏳")
+        out += (f"{icon} <b>{name}</b> · {r['mode'].upper()} · "
+                f"{base.DIR_NAME.get(r['direction'], '?')}\n"
+                f"   {i18n.t('entry', lang)} {r['entry']} · "
+                f"{i18n.t('stop', lang)} {r['stop']}\n")
+    send(chat_id, out)
+
+
+def do_history(chat_id: int, user_id: int):
+    lang = lang_of(user_id)
+    rows = [r for r in journal._load()
+            if r.get("r") is not None and r.get("user_id") in (None, user_id)]
+    if not rows:
+        send(chat_id, i18n.t("no_history", lang))
+        return
+    rows = rows[-10:][::-1]
+    out = f"📜 <b>{i18n.t('history_title', lang)}</b>\n\n"
+    for r in rows:
+        inst = I.BY_KEY.get(r.get("instrument") or "")
+        name = inst.display if inst else (r.get("instrument") or "?").upper()
+        icon = "✅" if float(r["r"]) > 0 else "❌"
+        out += (f"{icon} <b>{name}</b> {r['mode'].upper()} · "
+                f"{float(r['r']):+.2f}R\n")
+    send(chat_id, out)
+
+
+def do_period(chat_id: int, user_id: int, period: str):
+    send(chat_id, journal.format_period(period, user_id, lang_of(user_id)))
+
+
+# --------------------------------------------------------------------------- #
+#  Risk and money management (§17)
+# --------------------------------------------------------------------------- #
+def do_management(chat_id: int, user_id: int, args: list[str]):
+    lang = lang_of(user_id)
+    sub = (args[0].lower() if args else "")
+
+    if sub == "off":
+        users.management_off(user_id)
+        send(chat_id, f"🛡️ {i18n.t('mgmt_off', lang)}")
+        return
+
+    if sub != "on":
+        send(chat_id, i18n.t("mgmt_form", lang))
+        return
+
+    rest = args[1:]
+    if len(rest) < 5:
+        send(chat_id, i18n.t("mgmt_form", lang))
+        return
+
+    try:
+        bal_value, bal_ccy = money.parse_amount(rest[0])
+        risk_pct = float(rest[1].rstrip("%"))
+        dd_pct = float(rest[2].rstrip("%"))
+        max_trades = int(float(rest[3]))
+        target_pct = float(rest[4].rstrip("%"))
+    except (money.MoneyError, ValueError):
+        send(chat_id, i18n.t("mgmt_form", lang))
+        return
+
+    balance_usd = money.to_usd(bal_value, bal_ccy)
+    if balance_usd is None:
+        send(chat_id, i18n.t("fx_unavailable", lang, ccy=bal_ccy))
+        return
+    if not (0 < risk_pct <= 100 and 0 < dd_pct <= 100
+            and 0 < max_trades <= 100 and 0 < target_pct <= 1000):
+        send(chat_id, i18n.t("mgmt_form", lang))
+        return
+
+    mgmt = users.management_defaults(balance_usd, risk_pct, dd_pct,
+                                     max_trades, target_pct)
+    mgmt["currency"] = bal_ccy
+    mgmt["balance_display"] = money.fmt(bal_value, bal_ccy)
+    users.management_on(user_id, mgmt)
+    per_trade = balance_usd * risk_pct / 100.0
+    send(chat_id, i18n.t("mgmt_on", lang,
+                         balance=money.fmt(bal_value, bal_ccy),
+                         risk=f"{risk_pct:g}", per_trade=money.fmt(per_trade, "USD"),
+                         dd=f"{dd_pct:g}", trades=max_trades,
+                         target=f"{target_pct:g}"))
+
+
+def management_gate(chat_id: int, user_id: int) -> bool:
+    """True if a signal may be issued. Refuses and explains when it may not."""
+    lang = lang_of(user_id)
+    u = users.get(user_id)
+    m = u.get("management") or {}
+    if not m.get("enabled"):
+        return True
+
+    if u["day_trades"] >= m["max_daily_trades"]:
+        send(chat_id, i18n.t("mgmt_max_trades", lang,
+                             n=u["day_trades"], max=m["max_daily_trades"]))
+        return False
+
+    dd_limit = -abs(m["balance_usd"] * m["daily_dd_pct"] / 100.0)
+    if u["day_pl_usd"] <= dd_limit:
+        send(chat_id, i18n.t("mgmt_drawdown", lang,
+                             pl=f"{u['day_pl_usd']:+,.2f}",
+                             limit=f"{dd_limit:,.2f}"))
+        return False
+    return True
+
+
+def check_profit_target(user_id: int) -> str | None:
+    """§17: hitting the target switches management off and says so. It is
+    never switched back on automatically — that is the user's decision."""
+    u = users.get(user_id)
+    m = u.get("management") or {}
+    if not m.get("enabled"):
+        return None
+    target = m["start_balance_usd"] * m["profit_target_pct"] / 100.0
+    gained = m["balance_usd"] - m["start_balance_usd"]
+    if gained < target:
+        return None
+    users.management_off(user_id)
+    return i18n.t("mgmt_target_hit", lang_of(user_id),
+                  target=f"{m['profit_target_pct']:g}",
+                  profit=f"{gained:,.2f}",
+                  start=f"{m['start_balance_usd']:,.2f}")
+
+
+# --------------------------------------------------------------------------- #
+#  /signal — the command, with everything that guards it
+# --------------------------------------------------------------------------- #
+def do_signal_command(chat_id: int, user_id: int, args: list[str]):
+    lang = lang_of(user_id)
+    u = users.get(user_id)
+
+    # 1. an explicit risk clause wins over anything stored
+    try:
+        risk, rest = money.parse_risk_args(list(args))
+    except money.MoneyError as exc:
+        send(chat_id, i18n.t("risk_unreadable", lang, raw=html.escape(str(exc))))
+        return
+
+    symbol_key, mode, bad = parse_args(rest)
+    if bad:
+        send(chat_id, i18n.t("unknown_symbol", lang, what=html.escape(bad)))
+        return
+
+    # 2. risk management can refuse outright
+    if not management_gate(chat_id, user_id):
+        return
+
+    # 3. one live signal per pair AND style — a swing never blocks a scalp
+    live = journal.active_signals(instrument=symbol_key, mode=mode,
+                                  user_id=user_id)
+    if live:
+        r = live[0]
+        inst = I.BY_KEY.get(symbol_key)
+        send(chat_id, i18n.t("cooldown", lang,
+                             mode=mode, pair=inst.display if inst else symbol_key,
+                             state=journal.STATUS_LABEL.get(r.get("state"), "WAIT"),
+                             sid=r["id"]))
+        return
+
+    # 4. resolve the risk amount into USD, refusing rather than guessing
+    risk_usd = None
+    risk_display = None
+    if risk is None and u.get("risk_amount"):
+        risk = (u["risk_amount"]["value"], u["risk_amount"]["currency"])
+    if risk is None:
+        mgmt_risk = users.risk_per_trade_usd(u)
+        if mgmt_risk is not None:
+            risk_usd, risk_display = mgmt_risk, money.fmt(mgmt_risk, "USD")
+    else:
+        value, ccy = risk
+        risk_usd = money.to_usd(value, ccy, fetch=fetch_ohlc)
+        if risk_usd is None:
+            send(chat_id, i18n.t("fx_unavailable", lang, ccy=ccy))
+            return
+        risk_display = money.fmt(value, ccy)
+        users.update(user_id, risk_amount={"value": value, "currency": ccy})
+
+    do_signal(chat_id, symbol_key, mode, user_id=user_id, risk_usd=risk_usd,
+              risk_display=risk_display)
+
+
+def help_text(lang: str = i18n.EN) -> str:
+    """§23. Only commands that actually work on a free data plan."""
+    t = lambda k: i18n.t(k, lang)
+    return (
+        f"⚔️ <b>BENIHANA {t('commands', lang) if False else 'COMMANDS'}</b>\n\n"
+        f"📡 <b>{t('sec_signals')}</b>\n"
+        "<code>/signal xauusd intraday</code>\n"
+        "<code>/signal xauusd scalp risk 20$</code>\n"
+        "<code>/signal eurusd swing risk 300k IDR</code>\n"
+        "<code>/signals</code> · <code>/scan</code> · <code>/cancel &lt;id&gt;</code>\n"
+        "<code>/setconf 80</code> · <code>/strategy</code> · <code>/symbols</code>\n\n"
+        f"📊 <b>{t('sec_performance')}</b>\n"
+        "<code>/daily</code> · <code>/weekly</code> · <code>/monthly</code>\n"
+        "<code>/stats xauusd</code> · <code>/history</code>\n"
+        "<code>/backtest intraday calibrate</code> · <code>/calibration</code>\n\n"
+        f"🛡️ <b>{t('sec_risk')}</b>\n"
+        "<code>/management on 1000$ 1 5 5 5</code>\n"
+        "<code>/management off</code>\n\n"
+        f"⚙️ <b>{t('sec_settings')}</b>\n"
+        "<code>/language english</code> · <code>/language bahasa</code>\n"
+        "<code>/settings</code> · <code>/status</code>\n\n"
+        f"💬 <b>{t('sec_other')}</b>\n"
+        "<code>/motivation</code> · <code>/help</code>\n\n"
+        f"<i>{t('help_footer')}</i>"
+    )
+
+
 def handle_message(msg: dict):
     chat_id = msg["chat"]["id"]
     user_id = msg.get("from", {}).get("id", 0)
@@ -406,20 +700,42 @@ def handle_message(msg: dict):
         return
 
     if not allowed(user_id):
-        send(chat_id, "Not authorised.")
+        send(chat_id, i18n.t("not_authorised", lang_of(user_id)))
         return
 
-    if cmd in ("/start", "/help"):
-        send(chat_id, HELP)
+    lang = lang_of(user_id)
+
+    if cmd in ("/start", "/help", "/menu"):
+        send(chat_id, help_text(lang))
+    elif cmd == "/language":
+        do_language(chat_id, user_id, args)
+    elif cmd == "/setconf":
+        do_setconf(chat_id, user_id, args)
     elif cmd == "/strategy":
-        send(chat_id, STRATEGY)
+        do_strategy(chat_id, user_id, args)
+    elif cmd == "/motivation":
+        do_motivation(chat_id, user_id)
+    elif cmd == "/settings":
+        do_settings(chat_id, user_id)
+    elif cmd == "/status":
+        do_status(chat_id, user_id)
+    elif cmd == "/signals":
+        do_signals_list(chat_id, user_id)
+    elif cmd == "/history":
+        do_history(chat_id, user_id)
+    elif cmd in ("/daily", "/weekly", "/monthly"):
+        do_period(chat_id, user_id, cmd.lstrip("/"))
+    elif cmd == "/management":
+        do_management(chat_id, user_id, args)
+    elif cmd == "/cancel":
+        sid = args[0] if args else ""
+        send(chat_id, i18n.t("cancelled_ok" if journal.cancel(sid)
+                             else "cancel_notfound", lang))
     elif cmd == "/signal":
-        symbol_key, mode, bad = parse_args(args)
-        if bad:
-            send(chat_id, f"Don't know <b>{html.escape(bad)}</b>. "
-                          f"Try /symbols for the list.")
-            return
-        do_signal(chat_id, symbol_key, mode)
+        do_signal_command(chat_id, user_id, args)
+    elif cmd == "/scan":
+        _, mode, _ = parse_args(args, default_mode="intraday")
+        do_scan(chat_id, user_id, mode)
     elif cmd == "/backtest":
         calibrate = any(a.lower().lstrip("-") == "calibrate" for a in args)
         symbol_key, mode, _ = parse_args(args)
@@ -431,20 +747,10 @@ def handle_message(msg: dict):
         do_stats(chat_id, symbol_key, mode if any(
             a.lower().lstrip("/") in C.MODES or a.lower() in MODE_WORDS
             for a in args) else None)
-    elif cmd == "/news":
-        symbol_key, _, _ = parse_args(args)
-        do_news(chat_id, symbol_key)
-    elif cmd in ("/alert", "/alerts"):
-        do_alert(chat_id, args)
-    elif cmd == "/alerthelp":
-        send(chat_id, ALERT_HELP)
-    elif cmd in ("/crazymode", "/scan"):
-        _, mode, _ = parse_args(args, default_mode="intraday")
-        do_crazymode(chat_id, mode)
     elif cmd == "/symbols":
         do_symbols(chat_id)
     else:
-        send(chat_id, "Unknown command. Try /help")
+        send(chat_id, i18n.t("unknown_command", lang))
 
 
 def handle_callback(cb: dict):

@@ -189,16 +189,7 @@ PROB_FLOOR = 0.05
 PROB_CEIL = 0.85
 
 # ------------------------------------------------------------- scanning/alerts
-# A sweep costs 3 requests per instrument. Against a free tier of 8/min, keep
-# the default list short and let the deadline stop it rather than the API.
-SCAN_DEADLINE_S = float(_get("SCAN_DEADLINE_S", "45"))
-CRAZY_MAX_SYMBOLS = int(_get("CRAZY_MAX_SYMBOLS", "8"))
-_raw_scan = _get("SCAN_SYMBOLS", "xauusd,eurusd,gbpusd,usdjpy,audusd,xagusd")
-SCAN_SYMBOLS = [s for s in (x.strip().lower() for x in _raw_scan.split(",")) if s]
-
-ALERTS_FILE = _get("ALERTS_FILE") or os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "alerts.json"
-)
+# A sweep costs 3 requests per instrument. Against a free tier of 8/min, keep)
 # Only an ENTRY this confident is worth interrupting someone for.
 ALERT_MIN_CONFIDENCE = int(_get("ALERT_MIN_CONFIDENCE", "55"))
 
@@ -211,6 +202,18 @@ JOURNAL_FILE = _get("JOURNAL_FILE") or os.path.join(
 JOURNAL_MAX_ENTRIES = int(_get("JOURNAL_MAX_ENTRIES", "2000"))
 # Bars after entry to wait before giving up on a signal that never resolved.
 JOURNAL_MAX_BARS = int(_get("JOURNAL_MAX_BARS", "120"))
+
+# ----------------------------------------------------------- auto-signals
+# §12: a setup this confident is sent without being asked. It still has to
+# satisfy the strategy's real entry conditions — a market merely moving is
+# not a signal. Per-user /setconf overrides this.
+AUTO_SIGNAL_CONFIDENCE = int(_get("AUTO_SIGNAL_CONFIDENCE", "85"))
+
+# -------------------------------------------------------------- lifecycle
+# Once the first target pays, the rest of the position rides at zero risk.
+# This is the plan the expectancy figure already assumes, so the lifecycle
+# tracker has to follow it or /stats and the signal disagree.
+MOVE_TO_BREAKEVEN_AFTER_TP1 = _get("MOVE_TO_BREAKEVEN_AFTER_TP1", "1") not in ("0", "false", "False")
 
 # ------------------------------------------------------------- strategies
 # Crimson Flow — momentum breakout. Weights total 100.

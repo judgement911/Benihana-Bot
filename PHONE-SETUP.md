@@ -182,53 +182,23 @@ and takes a couple of minutes.
 
 ---
 
-## Which to pick
+## Automatic signals and trade tracking
 
-| | Cloud (A) | Termux (B) |
-|---|---|---|
-| iPhone | ✅ | ❌ |
-| Works with phone off | ✅ | ❌ |
-| Free | ✅ | ✅ |
-| Setup time | ~20 min | ~15 min |
-| Survives a reboot | ✅ | ❌ |
+The bot is a webhook: it only runs when you message it, so on its own it
+cannot watch the market or a trade you are already in. `scan_job.py` is the
+part that can, and it does two things each run — walks every open signal
+forward and tells you about fills, targets, breakeven and stops, and sends
+any fresh setup that clears your `/setconf` floor without being asked.
 
-Do **Route A**. Use Termux only if you're on Android and want to poke at the code
-directly.
-
----
-
-## If something breaks
-
-| Symptom | Cause |
-|---|---|
-| `TELEGRAM_BOT_TOKEN missing` | Env var not saved, or a stray space in the value |
-| `TWELVEDATA_API_KEY is not set` | Same, check the Render dashboard |
-| Bot silent, log shows `Conflict` | Two copies running. Kill one — Termux and Render can't both poll |
-| `Rate limit hit` | 8 requests/min ceiling. Wait 60 seconds |
-| First `/signal` takes a minute | Service was asleep. Set up the cron pinger (step 8) |
-| `No candles returned` | Weekend. Gold closes Friday ~21:00 UTC to Sunday ~22:00 UTC |
-
----
-
-## Alerts, from the phone
-
-`/alert xauusd scalp` subscribes you. The bot is a webhook though — it only
-wakes when Telegram pokes it, so something has to run the scanner on a clock.
-
-**Tasks** tab → **Create a scheduled task**:
+Schedule it in the **Tasks** tab:
 
 ```
 python3 /home/YOURNAME/Benihana-Bot/scan_job.py
 ```
 
-A free account allows **one task per day**, so alerts arrive once daily at
-whatever time you pick. Pick the hour your session actually opens. Hourly
-scanning needs a paid plan.
+A free PythonAnywhere account gets **one scheduled task a day**, so on that
+plan both jobs run once daily: a TP1 that fills at noon is reported whenever
+the task runs. Any host with cron gives you minutes instead. That is a limit
+of the hosting, not the bot — nothing here is broken if notifications are
+slow, and nothing will make them faster on the free tier.
 
-`/alerthelp` in the chat repeats all of this if you forget.
-
-## What `/news` will do on a free account
-
-Fail, and say why. Outbound traffic on free accounts is limited to a
-whitelist and the Forex Factory feed is not on it. Twelve Data is, which is
-why prices work and the calendar does not. Nothing is broken.

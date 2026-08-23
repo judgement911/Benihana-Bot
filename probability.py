@@ -136,17 +136,33 @@ def calibration_status(cal: Optional[dict] = None) -> dict:
         "present": bool(modes),
         "generated": (cal or {}).get("generated"),
         "symbol": (cal or {}).get("symbol"),
+        "source_note": (cal or {}).get("source"),
+        "ladder": (cal or {}).get("ladder"),
         "modes": {
             name: {
                 "trades": int(m.get("trades", 0)),
                 "tp1": m.get("tp1"),
+                "tp2": m.get("tp2"),
                 "final": m.get("final"),
+                "avg_r": m.get("avg_r"),
                 "buckets": m.get("buckets") or {},
                 "bars": m.get("bars"),
                 "source": m.get("source"),
             }
             for name, m in modes.items()
             if isinstance(m, dict)
+        },
+        "strategies": {
+            key: {
+                mode: {
+                    "trades": int(t.get("trades", 0)),
+                    "tp1": t.get("tp1"), "tp2": t.get("tp2"),
+                    "final": t.get("final"), "avg_r": t.get("avg_r"),
+                    "buckets": t.get("buckets") or {},
+                }
+                for mode, t in (per_mode or {}).items() if isinstance(t, dict)
+            }
+            for key, per_mode in (((cal or {}).get("strategies") or {}).items())
         },
     }
 
@@ -192,12 +208,31 @@ def _shrink(observed: float, n: float, prior: float, weight: float) -> float:
     return (n * observed + weight * prior) / (n + weight)
 
 
+def _table_for(cal: dict, mode: str, strategy: Optional[str]) -> tuple:
+    """The most specific measured table available for this trade.
+
+    A rate measured on a breakout says very little about a mean-reversion
+    fade, so a strategy's own table is preferred whenever it exists. When it
+    does not — a new ruleset, or one with too few trades to have been
+    written — the pooled mode table is a weaker but still measured answer,
+    and the model is the last resort.
+    """
+    if strategy:
+        by_strat = ((cal or {}).get("strategies") or {}).get(strategy) or {}
+        entry = by_strat.get(mode)
+        if isinstance(entry, dict) and entry.get("trades"):
+            return entry, True
+    entry = ((cal or {}).get("modes") or {}).get(mode)
+    return (entry if isinstance(entry, dict) else None), False
+
+
 def _calibrate(
-    p_model: float, mode: str, score: float, field: str, cal: dict
+    p_model: float, mode: str, score: float, field: str, cal: dict,
+    strategy: Optional[str] = None,
 ) -> tuple:
     """Drag the modelled probability toward measured results, in two stages:
     bucket rate -> mode-wide rate -> model. Returns (p, basis)."""
-    entry = ((cal or {}).get("modes") or {}).get(mode)
+    entry, own = _table_for(cal, mode, strategy)
     if not isinstance(entry, dict):
         return p_model, {"source": "model", "n": 0, "bucket": None}
 
@@ -218,11 +253,14 @@ def _calibrate(
     r_b = b.get(field)
     if n_b >= C.CALIBRATION_MIN_TRADES and isinstance(r_b, (int, float)):
         p = _shrink(float(r_b), n_b, p, w)
-        return _clamp(p, floor, ceil), {"source": "calibrated", "n": n_b, "bucket": key}
+        return _clamp(p, floor, ceil), {
+            "source": "strategy-calibrated" if own else "calibrated",
+            "n": n_b, "bucket": key,
+        }
 
     if mode_used:
         return _clamp(p, floor, ceil), {
-            "source": "mode-calibrated",
+            "source": "strategy-calibrated" if own else "mode-calibrated",
             "n": n_mode,
             "bucket": None,
         }
@@ -240,6 +278,7 @@ def estimate(
     mode: str = "intraday",
     cal: Optional[dict] = None,
     cost_r: Optional[float] = None,
+    strategy: Optional[str] = None,
 ) -> dict:
     """Probability that each target is reached before the stop, plus what that
     is worth in R.
@@ -253,18 +292,23 @@ def estimate(
     # evaluate(). A tighter stop eats a bigger share of itself in spread,
     # so the odds get worse instead of the tightening looking free.
     cost_r = C.COST_R if cost_r is None else _clamp(float(cost_r), 0.0, 0.5)
-    # Dealing cost as a share of the stop. Supplied per-instrument by
-    # evaluate(); the config constant is only the fallback.
-    cost_r = C.COST_R if cost_r is None else _clamp(float(cost_r), 0.0, 0.5)
     targets_r = [float(t) for t in (targets_r or [1.0])]
+
+    # The calibration file counts three rungs. Naming them by position rather
+    # than by index means a two-target ladder still calibrates both ends, and
+    # the middle rung of a three-target ladder stops being skipped — it used
+    # to fall through to the model while the rungs on either side of it were
+    # measured, which made TP2 the least trustworthy number on the signal.
+    last = len(targets_r) - 1
+    FIELDS = {0: "tp1", 1: "tp2", 2: "final"}
 
     rows, prev = [], 1.0
     for i, k in enumerate(targets_r):
-        field = "tp1" if i == 0 else "final" if i == len(targets_r) - 1 else None
+        field = "final" if i == last else FIELDS.get(i)
         p_model = model_probability(score, k, room_rr, cost_r)
 
         if field:
-            p, basis = _calibrate(p_model, mode, score, field, cal)
+            p, basis = _calibrate(p_model, mode, score, field, cal, strategy)
         else:
             p, basis = p_model, {"source": "model", "n": 0, "bucket": None}
 
@@ -384,6 +428,7 @@ def confidence(score: float, flags: Optional[dict] = None,
 SOURCE_NOTE = {
     "calibrated": "calibrated on {n} backtested trades in the {bucket} bucket",
     "mode-calibrated": "calibrated on {n} backtested trades (all buckets)",
+    "strategy-calibrated": "calibrated on {n} of this strategy's own trades",
     "model": "model estimate — no backtest calibration yet",
 }
 
@@ -486,31 +531,43 @@ def calibration_report() -> str:
             "barrier maths plus a capped edge term. It has never been checked "
             "against a real trade.\n\n"
             "Fix that:\n"
-            "  python backtest.py --mode intraday --csv XAUUSD_M15.csv --calibrate\n\n"
-            "That replays the live strategy over your history and writes\n"
+            "  python build_calibration.py\n\n"
+            "That replays every strategy over the cached candles using the "
+            "live ladder and writes\n"
             f"{C.CALIBRATION_FILE}. The bot picks it up without a restart."
         )
 
-    lines = [f"Calibrated from {st.get('symbol') or 'unknown symbol'}"]
+    def _pc(v):
+        return f"{v:.0%}" if isinstance(v, (int, float)) else "-"
+
+    lines = []
+    if st.get("source_note"):
+        lines.append(st["source_note"])
     if st.get("generated"):
         lines.append(f"generated {st['generated']}")
     lines.append("")
 
+    lines.append("ALL STRATEGIES POOLED")
+    lines.append(f"  {'mode':<9}{'n':>6}{'TP1':>7}{'TP2':>7}{'TP3':>7}")
     for name, m in sorted(st["modes"].items()):
-        n = m["trades"]
-        tp1 = f"{m['tp1']:.0%}" if isinstance(m["tp1"], (int, float)) else "-"
-        fin = f"{m['final']:.0%}" if isinstance(m["final"], (int, float)) else "-"
-        lines.append(f"{name.upper():<9} {n} trades   TP1 {tp1}   final {fin}")
+        lines.append(f"  {name:<9}{m['trades']:>6}{_pc(m['tp1']):>7}"
+                     f"{_pc(m['tp2']):>7}{_pc(m['final']):>7}")
+    lines.append("")
 
-        buckets = m["buckets"]
-        shown = [k for k in BUCKETS if k in buckets and buckets[k].get("n")]
-        if shown:
-            lines.append(f"  {'bucket':<8}{'n':>4}{'TP1':>7}{'final':>8}")
-            for k in shown:
-                b = buckets[k]
-                b1 = f"{b['tp1']:.0%}" if isinstance(b.get("tp1"), (int, float)) else "-"
-                bf = f"{b['final']:.0%}" if isinstance(b.get("final"), (int, float)) else "-"
-                lines.append(f"  {k:<8}{b['n']:>4}{b1:>7}{bf:>8}")
+    # The per-strategy table is the one that actually prices a signal; the
+    # pooled table above is only the fallback when a strategy has too few
+    # trades of its own.
+    if st.get("strategies"):
+        lines.append("PER STRATEGY  (used first when present)")
+        lines.append(f"  {'strategy':<10}{'mode':<9}{'n':>6}{'TP1':>7}"
+                     f"{'TP2':>7}{'TP3':>7}{'avg R':>8}")
+        for key in sorted(st["strategies"]):
+            for mode, t in sorted(st["strategies"][key].items()):
+                avg = (f"{t['avg_r']:+.3f}"
+                       if isinstance(t.get("avg_r"), (int, float)) else "-")
+                lines.append(f"  {key:<10}{mode:<9}{t['trades']:>6}"
+                             f"{_pc(t['tp1']):>7}{_pc(t['tp2']):>7}"
+                             f"{_pc(t['final']):>7}{avg:>8}")
         lines.append("")
 
     lines.append(

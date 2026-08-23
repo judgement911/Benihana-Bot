@@ -823,7 +823,7 @@ def check_commands() -> bool:
              "/language english", "/setconf 70", "/setconf off",
              "/strategy", "/strategy shogun", "/strategy auto",
              "/daily", "/weekly", "/monthly", "/update", "/swingupdate",
-             "/management", "/resetdata", "/notacommand"]
+             "/management", "/resetdata", "/news", "/notacommand"]
 
     # Every command runs twice, once with risk management off and once with
     # it on. Half of /status only exists in the second state, so a fixture
@@ -892,6 +892,163 @@ def check_commands() -> bool:
     return ok
 
 
+
+def check_calibration() -> bool:
+    """The calibration lookup must prefer the most specific measured table,
+    fall back cleanly, and never break monotonicity.
+
+    Written after finding that the middle rung of a three-target ladder was
+    never calibrated at all: TP1 and TP3 were measured while TP2 fell through
+    to the model, which made the least reliable number on the signal the one
+    sitting between two reliable ones.
+    """
+    cal = {
+        "generated": "2026-01-01T00:00:00+00:00",
+        "ladder": [1.0, 2.0, 3.0],
+        "modes": {"intraday": {
+            "trades": 900, "tp1": 0.50, "tp2": 0.30, "final": 0.20,
+            "buckets": {"70-79": {"n": 300, "tp1": 0.55, "tp2": 0.34,
+                                  "final": 0.22}}}},
+        "strategies": {"shogun": {"intraday": {
+            "trades": 400, "tp1": 0.62, "tp2": 0.41, "final": 0.28,
+            "buckets": {"70-79": {"n": 150, "tp1": 0.66, "tp2": 0.45,
+                                  "final": 0.31}}}}},
+    }
+    ok = True
+
+    def run(strategy):
+        return prob.estimate(score=75, targets_r=[1.0, 2.0, 3.0], room_rr=3.5,
+                             mode="intraday", cal=cal, strategy=strategy)
+
+    # 1. every rung is measured, including the middle one
+    pooled = run(None)
+    for i, row in enumerate(pooled["targets"]):
+        if row["source"] == "model":
+            print(f"  x rung {row['r']}R fell through to the model")
+            ok = False
+
+    # 2. a strategy with its own table uses it, not the pooled one
+    own = run("shogun")
+    if not all(t["source"] == "strategy-calibrated" for t in own["targets"]):
+        print("  x shogun did not use its own table")
+        ok = False
+    if own["targets"][0]["p"] <= pooled["targets"][0]["p"]:
+        print("  x shogun's higher measured TP1 did not raise its probability")
+        ok = False
+
+    # 3. a strategy with no table of its own falls back rather than failing
+    back = run("kage")
+    if [t["p"] for t in back["targets"]] != [t["p"] for t in pooled["targets"]]:
+        print("  x fallback to the pooled table did not match the pooled result")
+        ok = False
+
+    # 4. monotone: a ladder cannot reach 3R without passing 2R
+    for label, res in (("pooled", pooled), ("shogun", own), ("kage", back)):
+        ps = [t["p"] for t in res["targets"]]
+        if any(b > a + 1e-9 for a, b in zip(ps, ps[1:])):
+            print(f"  x {label} probabilities are not non-increasing: {ps}")
+            ok = False
+
+    # 5. a thin bucket must be ignored, not trusted
+    thin = {"modes": {"intraday": {"trades": 0, "buckets": {
+        "70-79": {"n": 2, "tp1": 0.99, "tp2": 0.99, "final": 0.99}}}}}
+    r = prob.estimate(score=75, targets_r=[1.0, 2.0, 3.0], room_rr=3.5,
+                      mode="intraday", cal=thin)
+    if any(t["source"] != "model" for t in r["targets"]):
+        print("  x a 2-trade bucket was used as if it were evidence")
+        ok = False
+
+    # 6. a missing or malformed file leaves the model untouched
+    for junk in ({}, {"modes": None}, {"modes": {"intraday": "nonsense"}}):
+        r = prob.estimate(score=75, targets_r=[1.0, 2.0], room_rr=2.5,
+                          mode="intraday", cal=junk)
+        if any(t["source"] != "model" for t in r["targets"]):
+            print(f"  x malformed calibration {junk} was trusted")
+            ok = False
+
+    if ok:
+        print("  calibration: every rung measured, strategy table preferred, "
+              "thin buckets ignored")
+    return ok
+
+
+
+def check_news() -> bool:
+    """Event risk is computed from calendar rules, so the rules must hold.
+
+    The blackout window is the part worth testing hardest: an earlier version
+    read "clear" from the moment a release landed onwards, because the helper
+    it used rolls forward to the next month as soon as the current one is in
+    the past. It reported safety exactly during the half hour it existed to
+    warn about.
+    """
+    import calendar as _cal
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    import news
+
+    ok = True
+
+    # 1. the first-Friday rule, at 08:30 New York, for three years
+    for y in (2026, 2027, 2028):
+        for m in range(1, 13):
+            ny = news._first_friday(y, m).astimezone(news.NY)
+            want = min(d for d in range(1, 8) if _cal.weekday(y, m, d) == 4)
+            if (ny.day, ny.hour, ny.minute) != (want, 8, 30):
+                print(f"  x NFP {y}-{m:02d} computed as {ny}")
+                ok = False
+
+    # 2. New York time, not a frozen UTC offset — the US moves its clocks
+    if news._first_friday(2027, 1).hour == news._first_friday(2027, 7).hour:
+        print("  x NFP ignores US daylight saving")
+        ok = False
+
+    # 3. the blackout covers the whole window, including during and after
+    mid = news._first_friday(2026, 9)
+    for off, want in ((-60, False), (-30, True), (0, True),
+                      (20, True), (30, True), (31, False)):
+        got = news.blackout(mid + _td(minutes=off)) is not None
+        if got != want:
+            print(f"  x blackout at {off:+d} min: got {got}, wanted {want}")
+            ok = False
+
+    # 4. upcoming is ordered and inside the horizon
+    now = _dt.now(_tz.utc)
+    up = news.upcoming(now, days=14)
+    if up != sorted(up, key=lambda e: e.when_utc):
+        print("  x upcoming events are not in time order")
+        ok = False
+    if any(e.when_utc < now or e.when_utc > now + _td(days=14) for e in up):
+        print("  x upcoming returned an event outside the horizon")
+        ok = False
+
+    # 5. a broken events.json must be ignored, never raised
+    import tempfile, os as _os
+    real = news.EVENTS_FILE
+    for junk in ("not json at all", "{}", '[{"utc": "nonsense"}]', "[1,2,3]"):
+        p = _os.path.join(tempfile.mkdtemp(), "events.json")
+        open(p, "w").write(junk)
+        news.EVENTS_FILE = p
+        try:
+            news.upcoming(now)
+        except Exception as exc:                        # noqa: BLE001
+            print(f"  x malformed events.json raised {type(exc).__name__}")
+            ok = False
+    # 6. a well-formed user event is picked up
+    p = _os.path.join(tempfile.mkdtemp(), "events.json")
+    soon = (now + _td(days=2)).isoformat()
+    open(p, "w").write(f'[{{"name":"CPI","utc":"{soon}","impact":"high"}}]')
+    news.EVENTS_FILE = p
+    if not any(e.name == "CPI" for e in news.upcoming(now)):
+        print("  x a valid user event was not picked up")
+        ok = False
+    news.EVENTS_FILE = real
+
+    if ok:
+        print("  news: first-Friday rule holds, DST respected, blackout "
+              "covers the release itself")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -932,4 +1089,6 @@ if __name__ == "__main__":
 
     print("\nCommands:")
     ok &= check_commands()
+    ok &= check_calibration()
+    ok &= check_news()
     raise SystemExit(0 if ok else 1)

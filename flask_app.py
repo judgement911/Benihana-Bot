@@ -28,6 +28,7 @@ import scanner
 import i18n
 import money
 import motivation
+import news
 import strategies
 import strategy as base
 import users
@@ -755,13 +756,15 @@ def help_text(lang: str = i18n.EN) -> str:
     """§23. Only commands that actually work on a free data plan."""
     t = lambda k: i18n.t(k, lang)
     return (
-        f"⚔️ <b>BENIHANA {t('commands', lang) if False else 'COMMANDS'}</b>\n\n"
+        "⚔️ <b>BENIHANA COMMANDS</b>\n\n"
         f"📡 <b>{t('sec_signals')}</b>\n"
         "<code>/signal xauusd intraday</code>\n"
         "<code>/signal xauusd scalp risk 20$</code>\n"
         "<code>/signal eurusd swing risk 300k IDR</code>\n"
         "<code>/signals</code> · <code>/scan</code> · <code>/cancel &lt;id&gt;</code>\n"
         "<code>/setconf 80</code> · <code>/strategy</code> · <code>/symbols</code>\n\n"
+        f"📶 <b>{t('sec_open')}</b>\n"
+        "<code>/update</code> · <code>/swingupdate</code>\n\n"
         f"📊 <b>{t('sec_performance')}</b>\n"
         "<code>/daily</code> · <code>/weekly</code> · <code>/monthly</code>\n"
         "<code>/stats xauusd</code> · <code>/history</code>\n"
@@ -771,9 +774,9 @@ def help_text(lang: str = i18n.EN) -> str:
         "<code>/management off</code>\n\n"
         f"⚙️ <b>{t('sec_settings')}</b>\n"
         "<code>/language english</code> · <code>/language bahasa</code>\n"
-        "<code>/settings</code> · <code>/status</code>\n\n"
+        "<code>/settings</code> · <code>/status</code> · <code>/resetdata</code>\n\n"
         f"💬 <b>{t('sec_other')}</b>\n"
-        "<code>/motivation</code> · <code>/help</code>\n\n"
+        "<code>/news</code> · <code>/motivation</code> · <code>/help</code>\n\n"
         f"<i>{t('help_footer')}</i>"
     )
 
@@ -867,6 +870,48 @@ def do_resetdata(chat_id: int, user_id: int, args):
     send(chat_id, i18n.t("reset_done", lang, n=res["removed"]))
 
 
+def do_news(chat_id: int, user_id: int):
+    """Event risk from calendar rules plus whatever the user listed.
+
+    Deliberately small. A bot that cannot fetch a calendar should say what it
+    knows and say what it does not, rather than imply coverage it has no way
+    to provide.
+    """
+    lang = lang_of(user_id)
+    now = datetime.now(timezone.utc)
+
+    out = f"{i18n.t('news_title', lang)}\n"
+    out += "━━━━━━━━━━━━━━━━━━━━\n\n"
+
+    hot = news.blackout(now)
+    if hot:
+        hot_name = i18n.t(f"ev_{hot.key}", lang) if hot.key else hot.name
+        out += i18n.t("news_blackout", lang, name=html.escape(hot_name),
+                      before=news.BLACKOUT_BEFORE,
+                      after=news.BLACKOUT_AFTER) + "\n\n"
+    else:
+        out += i18n.t("news_clear", lang) + "\n\n"
+
+    events = news.upcoming(now, days=14)
+    if not events:
+        out += i18n.t("news_none", lang, days=14) + "\n\n"
+    else:
+        for e in events:
+            dot = "🔴" if e.impact == news.HIGH else "🟠"
+            tag = "" if e.source == "rule" else " ·<i>yours</i>"
+            name = i18n.t(f"ev_{e.key}", lang) if e.key else e.name
+            note = i18n.t(f"ev_{e.key}_note", lang) if e.key else e.note
+            out += (f"{dot} <b>{html.escape(name)}</b>{tag}\n"
+                    f"   {e.wib:%a %d %b · %H:%M} UTC+7  "
+                    f"<i>({news._delta(now, e.when_utc)})</i>\n")
+            if note:
+                out += f"   <i>{html.escape(note)}</i>\n"
+        out += "\n"
+
+    out += i18n.t("news_howto", lang)
+    send(chat_id, out)
+
+
 def handle_message(msg: dict):
     chat_id = msg["chat"]["id"]
     user_id = msg.get("from", {}).get("id", 0)
@@ -937,6 +982,8 @@ def handle_message(msg: dict):
         do_stats(chat_id, symbol_key, mode if any(
             a.lower().lstrip("/") in C.MODES or a.lower() in MODE_WORDS
             for a in args) else None)
+    elif cmd == "/news":
+        do_news(chat_id, user_id)
     elif cmd == "/symbols":
         do_symbols(chat_id)
     else:

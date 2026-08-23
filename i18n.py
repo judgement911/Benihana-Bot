@@ -156,15 +156,15 @@ S: dict[str, dict[str, str]] = {
     "sec_other": {EN: "Other", ID: "Lainnya"},
     "help_footer": {
         EN: ("Answers are ENTRY, WAIT or NO TRADE. Confidence is how well the "
-             "strategy's conditions line up; Odds is the modelled chance of a "
-             "target paying before the stop; Exp is that in R. Run "
-             "/backtest intraday calibrate to replace the model's estimate "
-             "with measured results."),
+             "strategy's conditions line up; Odds is the chance of a target "
+             "paying before the stop; Exp is that in R. /calibration says "
+             "whether those odds were measured on real trades or are still "
+             "the model's estimate."),
         ID: ("Jawaban berupa ENTRY, WAIT, atau NO TRADE. Keyakinan menunjukkan "
-             "seberapa cocok syarat strategi; Peluang adalah perkiraan target "
-             "tercapai sebelum stop; Ekspektasi menyatakannya dalam R. Jalankan "
-             "/backtest intraday calibrate untuk mengganti estimasi model "
-             "dengan hasil terukur."),
+             "seberapa cocok syarat strategi; Peluang adalah kemungkinan target "
+             "tercapai sebelum stop; Ekspektasi menyatakannya dalam R. "
+             "/calibration menunjukkan apakah peluang itu terukur dari trade "
+             "nyata atau masih estimasi model."),
     },
 
     # --------------------------------------------------------------- menus
@@ -223,6 +223,48 @@ S: dict[str, dict[str, str]] = {
     },
 
     # ---------------------------------------------------------- /resetdata
+    "sec_open": {EN: "Open positions", ID: "Posisi terbuka"},
+    "ev_nfp": {EN: "Non-farm payrolls", ID: "Non-farm payrolls"},
+    "ev_nfp_note": {
+        EN: "first Friday, 08:30 New York",
+        ID: "Jumat pertama, 08:30 New York",
+    },
+    "ev_weekly_close": {EN: "Weekly close", ID: "Penutupan mingguan"},
+    "ev_weekly_close_note": {
+        EN: "spreads widen, then the weekend gap",
+        ID: "spread melebar, lalu gap akhir pekan",
+    },
+    "news_title": {
+        EN: "🗓 <b>EVENT RISK</b>", ID: "🗓 <b>RISIKO EVENT</b>",
+    },
+    "news_none": {
+        EN: "Nothing scheduled in the next {days} days.",
+        ID: "Tidak ada jadwal dalam {days} hari ke depan.",
+    },
+    "news_blackout": {
+        EN: ("🚨 <b>{name}</b> is inside its window right now "
+             "({before} min before to {after} min after).\n"
+             "Spreads widen and stops get run. Trading through it is a "
+             "coin flip with a worse price."),
+        ID: ("🚨 <b>{name}</b> sedang dalam jendela rilis "
+             "({before} menit sebelum sampai {after} menit sesudah).\n"
+             "Spread melebar dan stop mudah kena. Trading saat ini seperti "
+             "melempar koin dengan harga yang lebih buruk."),
+    },
+    "news_clear": {
+        EN: "✅ No high-impact release inside its window right now.",
+        ID: "✅ Tidak ada rilis berdampak tinggi saat ini.",
+    },
+    "news_howto": {
+        EN: ("<i>The bot has no news feed. It computes what a calendar rule "
+             "can prove — payrolls is always the first Friday — and reads "
+             "anything else you add to events.json. It never guesses a "
+             "date.</i>"),
+        ID: ("<i>Bot ini tidak punya feed berita. Yang dihitung hanya yang "
+             "bisa dipastikan dari aturan kalender — payrolls selalu Jumat "
+             "pertama — ditambah apa pun yang Anda isi di events.json. Bot "
+             "tidak pernah menebak tanggal.</i>"),
+    },
     "reset_confirm": {
         EN: ("🗑 <b>Erase all your records?</b>\n\n"
              "This wipes every signal behind /stats, /daily, /weekly, "

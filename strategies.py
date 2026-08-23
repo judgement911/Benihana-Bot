@@ -150,6 +150,9 @@ def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
     out["probability"] = prob.estimate(
         score=out["score"], targets_r=spec.tp_multiples, room_rr=room_rr,
         mode=spec.name, cost_r=inst.cost_r(out["levels"]["risk_points"]),
+        # Each ruleset is calibrated against its own measured hit rates;
+        # pooling them would let a breakout borrow a fade's numbers.
+        strategy=out.get("strategy"),
     )
     return out
 

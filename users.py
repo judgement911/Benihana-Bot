@@ -155,7 +155,7 @@ def management_off(user_id: int) -> dict:
     with fresh figures, which is the honest default.
     """
     return update(user_id, management=None, day_trades=0, day_pl_usd=0.0,
-                  day_peak_usd=0.0)
+                  day_peak_usd=0.0, day_trough_usd=0.0)
 
 
 def risk_per_trade_usd(u: dict) -> float | None:

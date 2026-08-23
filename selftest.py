@@ -1186,6 +1186,74 @@ def check_subscriptions() -> bool:
     return ok
 
 
+
+def check_management_lifecycle() -> bool:
+    """Turning risk management off, or hitting the target, must leave nothing
+    behind.
+
+    A parked envelope is the dangerous state: the next trade would be sized
+    from a balance the user last confirmed weeks ago, and the drawdown meter
+    would be measured against a peak from a different day.
+    """
+    import flask_app as F
+    import users as U
+
+    UID = 90002
+    ok = True
+    env = {"enabled": True, "balance_usd": 5000.0,
+           "start_balance_usd": 5000.0, "risk_pct": 1.0, "daily_dd_pct": 3.0,
+           "profit_target_pct": 5.0, "max_daily_trades": 6}
+
+    def dirty():
+        U.update(UID, management=dict(env), day_trades=4, day_pl_usd=-30.0,
+                 day_peak_usd=90.0, day_trough_usd=-210.0)
+
+    def clean(label):
+        nonlocal ok
+        u = U.get(UID)
+        if u.get("management") is not None:
+            print(f"  x {label} left the envelope in place")
+            ok = False
+        for field in ("day_trades", "day_pl_usd", "day_peak_usd",
+                      "day_trough_usd"):
+            if u.get(field):
+                print(f"  x {label} left {field}={u[field]!r} behind")
+                ok = False
+
+    # 1. explicit off deletes rather than disables
+    dirty()
+    U.management_off(UID)
+    clean("/management off")
+
+    # 2. reaching the target deletes it too, and says so once
+    dirty()
+    if F.check_profit_target(UID) is not None:
+        print("  x the target fired while the account was still below it")
+        ok = False
+    m = dict(env)
+    m["balance_usd"] = 5300.0            # +6%, past the 5% target
+    U.update(UID, management=m)
+    if not F.check_profit_target(UID):
+        print("  x reaching the target produced no message")
+        ok = False
+    clean("hitting the profit target")
+    if F.check_profit_target(UID) is not None:
+        print("  x the target fired a second time after being cleared")
+        ok = False
+
+    # 3. a fresh envelope starts from zero, not from the old day's worst
+    U.update(UID, management=dict(env))
+    if U.max_drawdown_today(U.get(UID)) != 0.0:
+        print("  x a new envelope inherited the previous day's drawdown")
+        ok = False
+
+    U.update(UID, management=None)
+    if ok:
+        print("  management: off and target-hit both delete the envelope, "
+              "counters included")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -1229,4 +1297,5 @@ if __name__ == "__main__":
     ok &= check_calibration()
     ok &= check_news()
     ok &= check_subscriptions()
+    ok &= check_management_lifecycle()
     raise SystemExit(0 if ok else 1)

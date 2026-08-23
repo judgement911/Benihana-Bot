@@ -105,7 +105,11 @@ def load_calibration(path: Optional[str] = None) -> dict:
     probabilities stay modelled, and the signal says so.
     """
     global _cal_cache
-    path = path or C.CALIBRATION_FILE
+    if path is None:
+        path = C.CALIBRATION_FILE
+        if not os.path.exists(path):
+            # Nothing measured on this host — fall back to what shipped.
+            path = getattr(C, "CALIBRATION_FALLBACK", path)
 
     try:
         mtime = os.path.getmtime(path)

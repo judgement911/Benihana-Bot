@@ -317,9 +317,21 @@ BACKTEST_BARS = int(_get("BACKTEST_BARS", "2500"))
 BACKTEST_BARS_CLI = int(_get("BACKTEST_BARS_CLI", "5000"))
 
 # ---------------------------------------------------------------- calibration
-# Written by:  python backtest.py --mode intraday --csv FILE --calibrate
+# Written on this host by:  python build_calibration.py
+# Deliberately gitignored: it is measured on whatever data this machine has,
+# and a deploy must never overwrite a calibration the operator generated.
 CALIBRATION_FILE = _get("CALIBRATION_FILE") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "calibration.json"
+)
+
+# ...which leaves the problem that the deployment host cannot generate one.
+# Measuring the ladder takes half an hour of CPU across every strategy and
+# both instruments; a free hosting tier has about a hundred seconds a day.
+# So the repository also ships a calibration built from the committed
+# candles, and it is read only when the host has no calibration of its own.
+# A local measurement always wins — this is a floor, not an override.
+CALIBRATION_FALLBACK = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "calibration.default.json"
 )
 
 # Empirical-Bayes shrinkage: how many "pseudo-trades" of model prior a real

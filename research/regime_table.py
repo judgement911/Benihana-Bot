@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import glob
 import json
-import os
 
 import numpy as np
 import pandas as pd
@@ -106,4 +105,4 @@ if __name__ == "__main__":
     lookup = to_lookup(d)
     with open("research/out/regime_lookup.json", "w") as fh:
         json.dump(lookup, fh, indent=1)
-    print(f"\nwrote research/out/regime_lookup.json")
+    print("\nwrote research/out/regime_lookup.json")

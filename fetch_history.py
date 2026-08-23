@@ -26,6 +26,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
+
+import pandas as pd
 
 import config as C
 import instruments as I
@@ -39,6 +42,10 @@ def main() -> int:
     p.add_argument("--bars", type=int, default=5000, help="candles per timeframe")
     p.add_argument("--modes", default="scalp,intraday,swing")
     p.add_argument("--out", default=OUT_DIR)
+    p.add_argument("--deep", type=int, default=1,
+                   help="how many 5000-bar windows to walk back (1 = latest only)")
+    p.add_argument("--pause", type=float, default=8.5,
+                   help="seconds between requests; 8.5 keeps under 8/min")
     args = p.parse_args()
 
     inst = I.find(args.symbol)
@@ -56,12 +63,39 @@ def main() -> int:
             print(f"  skipping unknown mode {mode!r}")
             continue
         tf = C.MODES[mode].entry_tf
-        try:
-            df = fetch_ohlc(inst.symbol, tf, args.bars)
-        except Exception as exc:                    # noqa: BLE001
-            print(f"  {mode:<9} {tf:<6} FAILED: {exc}", file=sys.stderr)
+        # Walk backwards a window at a time. The provider caps one response
+        # at 5000 candles, so deep history is several dated requests stitched
+        # together — paced to stay inside the free tier's 8 per minute.
+        frames, end = [], None
+        for w in range(args.deep):
+            try:
+                chunk = fetch_ohlc(inst.symbol, tf, args.bars, end_date=end)
+            except Exception as exc:                # noqa: BLE001
+                print(f"  {mode:<9} {tf:<6} window {w + 1} failed: {exc}",
+                      file=sys.stderr)
+                break
+            frames.append(chunk)
+            # Next window ends one bar before the oldest we just received.
+            end = (chunk.index[0] - pd.Timedelta(seconds=1)).strftime(
+                "%Y-%m-%d %H:%M:%S")
+            if len(chunk) < args.bars:
+                break                               # provider ran out of history
+            if w + 1 < args.deep:
+                time.sleep(args.pause)
+        if not frames:
             continue
+        df = pd.concat(frames).sort_index()
+        df = df[~df.index.duplicated(keep="last")]
         path = os.path.join(args.out, f"{inst.key}_{tf}.csv")
+        # Merge with anything already on disk so repeated runs deepen the file
+        # rather than replacing it.
+        if os.path.exists(path):
+            try:
+                old = pd.read_csv(path, parse_dates=["datetime"]).set_index("datetime")
+                df = pd.concat([old, df]).sort_index()
+                df = df[~df.index.duplicated(keep="last")]
+            except Exception:                       # noqa: BLE001
+                pass
         df.to_csv(path, index_label="datetime")
         span = f"{df.index[0]:%Y-%m-%d} to {df.index[-1]:%Y-%m-%d}"
         print(f"  {mode:<9} {tf:<6} {len(df):>5} bars  {span}  -> {os.path.relpath(path)}")

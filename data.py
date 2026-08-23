@@ -32,13 +32,21 @@ class DataError(RuntimeError):
     pass
 
 
-def fetch_ohlc(symbol: str, interval: str, bars: int = 300) -> pd.DataFrame:
-    """Returns a UTC-indexed OHLC frame, oldest bar first."""
-    key = (symbol, interval)
+def fetch_ohlc(symbol: str, interval: str, bars: int = 300,
+               end_date: str = None) -> pd.DataFrame:
+    """Returns a UTC-indexed OHLC frame, oldest bar first.
+
+    `end_date` ("YYYY-MM-DD HH:MM:SS") asks for the window ENDING there
+    instead of the most recent bars, which is how deep history is built: the
+    provider caps a single response at 5000 candles, so anything longer has
+    to be walked backwards a window at a time. Dated requests bypass the
+    cache, since they are not asking about "now".
+    """
+    key = (symbol, interval, end_date)
     now = time.time()
 
     hit = _cache.get(key)
-    if hit and (now - hit[0]) < CACHE_TTL.get(interval, 180):
+    if hit and end_date is None and (now - hit[0]) < CACHE_TTL.get(interval, 180):
         return hit[1]
 
     if not TWELVEDATA_API_KEY:
@@ -52,6 +60,8 @@ def fetch_ohlc(symbol: str, interval: str, bars: int = 300) -> pd.DataFrame:
         "timezone": "UTC",
         "format": "JSON",
     }
+    if end_date:
+        params["end_date"] = end_date
 
     try:
         resp = requests.get(BASE_URL, params=params, timeout=20)

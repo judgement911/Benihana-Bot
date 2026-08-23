@@ -76,6 +76,9 @@ def collect_entries(df, mode, key, inst, max_bars=None):
             continue
         lv = res["levels"]
         out.append({
+            "regime_adx": res.get("adx_trend"),
+            "regime_vol": res.get("atr_ratio"),
+            "regime_z": res.get("z_score"),
             "i": i, "time": now, "dir": res["direction"],
             "entry": lv["entry"], "risk": abs(lv["entry"] - lv["stop"]),
             "atr": lv["atr"], "score": res.get("score"),
@@ -291,6 +294,7 @@ def one_combo(args):
                 "cost_r": round(t["cost_r"], 4), "spread": spread,
                 "slippage": slip, "bars": t["bars"], "session": t["session"],
                 "score": t["score"], "confidence": t["confidence"],
+                "adx": t.get("regime_adx"), "vol_ratio": t.get("regime_vol"),
                 "exit_reason": t["exit_reason"], "entry_reason": t["reason"],
             })
     if tradelog:
@@ -300,9 +304,9 @@ def one_combo(args):
     return rows
 
 
-def main():
+def main(pairs=None):
     import concurrent.futures as cf
-    pairs = ("xauusd", "eurusd", "gbpusd", "usdjpy")
+    pairs = pairs or ("xauusd", "eurusd", "gbpusd", "usdjpy")
     jobs = [(p, m, k) for p in pairs for m in MODE_TF for k in REGISTRY]
     print(f"{len(jobs)} combinations "
           f"({len(pairs)} pairs x {len(MODE_TF)} modes x {len(REGISTRY)} strategies)")
@@ -331,4 +335,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sel = sys.argv[1].split(",") if len(sys.argv) > 1 else None
+    main(tuple(sel) if sel else None)

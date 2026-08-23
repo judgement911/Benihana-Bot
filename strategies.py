@@ -83,7 +83,8 @@ def _common_vetoes(e: dict, t: dict, b: dict, spec, now_utc, entry_df) -> list:
 
 def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
               e, entry_df, highs, lows, atr_e, spec, inst, balance, risk_pct,
-              risk_usd, now_utc, in_session, short_history) -> dict:
+              risk_usd, now_utc, in_session, short_history,
+              adx_trend=None) -> dict:
     """Everything downstream of 'which way and how strongly'.
 
     Levels, order type, confidence and probability are strategy-independent:
@@ -96,6 +97,8 @@ def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
     out["missing"] = missing
     out["direction"] = direction
     out["atr_ratio"] = round(float(e["atr_ratio"]), 3) if e.get("atr_ratio") else None
+    if adx_trend is not None:
+        out["adx_trend"] = round(float(adx_trend), 1)
 
     def build(px):
         return base._build_levels(px, direction=direction, highs=highs, lows=lows,
@@ -275,7 +278,8 @@ def evaluate_crimson(entry_df, trend_df, bias_df, spec, now_utc=None,
                      atr_e=float(e["atr"]), spec=spec, inst=inst,
                      balance=balance, risk_pct=risk_pct, risk_usd=risk_usd,
                      now_utc=now_utc, in_session=in_sess,
-                     short_history=b["ema_slow_n"] < 200)
+                     short_history=b["ema_slow_n"] < 200,
+                     adx_trend=t["adx"])
 
 
 # --------------------------------------------------------------------------- #
@@ -363,7 +367,8 @@ def evaluate_kage(entry_df, trend_df, bias_df, spec, now_utc=None,
                      highs=highs, lows=lows, atr_e=float(e["atr"]), spec=spec,
                      inst=inst, balance=balance, risk_pct=risk_pct,
                      risk_usd=risk_usd, now_utc=now_utc, in_session=in_sess,
-                     short_history=b["ema_slow_n"] < 200)
+                     short_history=b["ema_slow_n"] < 200,
+                     adx_trend=t["adx"])
 
 
 def _evaluate_ronin(*a, **kw) -> dict:
@@ -545,7 +550,8 @@ def evaluate_zanshin(entry_df, trend_df, bias_df, spec, now_utc=None,
                      e=e, entry_df=entry_df, highs=highs, lows=lows,
                      atr_e=atr_e, spec=spec, inst=inst, balance=balance,
                      risk_pct=risk_pct, risk_usd=risk_usd, now_utc=now_utc,
-                     in_session=in_sess, short_history=b["ema_slow_n"] < 200)
+                     in_session=in_sess, short_history=b["ema_slow_n"] < 200,
+                     adx_trend=t["adx"])
 
 
 REGISTRY["zanshin"] = Strategy(
@@ -660,7 +666,7 @@ def evaluate_shogun(entry_df, trend_df, bias_df, spec, now_utc=None,
                     highs=highs, lows=lows, atr_e=float(e["atr"]), spec=spec,
                     inst=inst, balance=balance, risk_pct=risk_pct,
                     risk_usd=risk_usd, now_utc=now_utc, in_session=in_sess,
-                    short_history=False)
+                    short_history=False, adx_trend=t["adx"])
     # The clock is the exit, so the signal has to say so.
     res["time_exit_bars"] = C.SHOGUN_HOLD
     res["z_score"] = round(z, 2)

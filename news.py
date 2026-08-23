@@ -35,9 +35,26 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-NY = ZoneInfo("America/New_York")
+
+def _new_york():
+    """The US moves its clocks, so payrolls is 13:30 UTC in winter and 12:30
+    in summer. That needs a real zone.
+
+    If the host has no tz database this must not take the bot down with it:
+    a missing calendar is a lost feature, an ImportError is a dead bot. The
+    fallback is US Eastern Standard, which is correct in winter and a full
+    hour early once daylight saving starts. TZ_EXACT records which one is in
+    use, so a screen can say so rather than quietly mislead.
+    """
+    try:
+        return ZoneInfo("America/New_York"), True
+    except (ZoneInfoNotFoundError, KeyError, OSError):
+        return timezone(timedelta(hours=-5)), False
+
+
+NY, TZ_EXACT = _new_york()
 WIB = timezone(timedelta(hours=7))
 
 EVENTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),

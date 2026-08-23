@@ -370,6 +370,14 @@ S: dict[str, dict[str, str]] = {
         EN: "✅ No high-impact release inside its window right now.",
         ID: "✅ Tidak ada rilis berdampak tinggi saat ini.",
     },
+    "news_tz_approx": {
+        EN: ("⚠️ <i>This host has no timezone database, so release times "
+             "are US Eastern Standard — correct in winter, one hour early "
+             "during US daylight saving.</i>"),
+        ID: ("⚠️ <i>Host ini tidak punya basis data zona waktu, jadi waktu "
+             "rilis memakai US Eastern Standard — tepat saat musim dingin, "
+             "satu jam lebih awal saat daylight saving AS.</i>"),
+    },
     "news_howto": {
         EN: ("<i>The bot has no news feed. It computes what a calendar rule "
              "can prove — payrolls is always the first Friday — and reads "

@@ -1062,7 +1062,18 @@ def check_news() -> bool:
             print(f"  x blackout at {off:+d} min: got {got}, wanted {want}")
             ok = False
 
-    # 4. upcoming is ordered and inside the horizon
+    # 4. a host with no timezone database must lose the calendar's accuracy,
+    #    not the bot: news.py is imported by flask_app, so an exception here
+    #    would take every command down for the sake of one feature
+    if not isinstance(news.TZ_EXACT, bool):
+        print("  x news does not report whether its timezone is exact")
+        ok = False
+    if news.TZ_EXACT and news._first_friday(2027, 7).hour == \
+            news._first_friday(2027, 1).hour:
+        print("  x an exact timezone still ignored daylight saving")
+        ok = False
+
+    # 5. upcoming is ordered and inside the horizon
     now = _dt.now(_tz.utc)
     up = news.upcoming(now, days=14)
     if up != sorted(up, key=lambda e: e.when_utc):
@@ -1072,7 +1083,7 @@ def check_news() -> bool:
         print("  x upcoming returned an event outside the horizon")
         ok = False
 
-    # 5. a broken events.json must be ignored, never raised
+    # 6. a broken events.json must be ignored, never raised
     import tempfile, os as _os
     real = news.EVENTS_FILE
     for junk in ("not json at all", "{}", '[{"utc": "nonsense"}]', "[1,2,3]"):
@@ -1084,7 +1095,7 @@ def check_news() -> bool:
         except Exception as exc:                        # noqa: BLE001
             print(f"  x malformed events.json raised {type(exc).__name__}")
             ok = False
-    # 6. a well-formed user event is picked up
+    # 7. a well-formed user event is picked up
     p = _os.path.join(tempfile.mkdtemp(), "events.json")
     soon = (now + _td(days=2)).isoformat()
     open(p, "w").write(f'[{{"name":"CPI","utc":"{soon}","impact":"high"}}]')

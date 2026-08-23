@@ -924,6 +924,8 @@ def do_news(chat_id: int, user_id: int):
                 out += f"   <i>{html.escape(note)}</i>\n"
         out += "\n"
 
+    if not news.TZ_EXACT:
+        out += i18n.t("news_tz_approx", lang) + "\n\n"
     out += i18n.t("news_howto", lang)
     send(chat_id, out)
 

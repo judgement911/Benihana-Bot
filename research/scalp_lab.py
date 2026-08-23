@@ -5,9 +5,8 @@ import os, sys
 import numpy as np, pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import instruments as I
-from engine import Costs, simulate, shift_causal
-from features import build, atr
+from engine import Costs, simulate
+from features import build
 import split as SP
 
 FLAT = 0

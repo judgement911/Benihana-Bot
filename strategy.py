@@ -644,6 +644,7 @@ def evaluate(
         room_rr=room_rr,
         mode=spec.name,
         cost_r=inst.cost_r(out["levels"]["risk_points"]),
+        strategy="ronin",     # this module is Ronin Edge's ruleset
     )
 
     return out

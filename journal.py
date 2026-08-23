@@ -554,3 +554,40 @@ def format_period(period: str = "daily", user_id: int = None,
         + f"📈 {i18n.t('total_r', lang)}: <b>{s['total_r']:+.2f}R</b>\n"
         + f"📐 {i18n.t('total_points', lang)}: {s['total_points']:+,.1f} pts"
     )
+
+
+def wipe(user_id: int = None) -> dict:
+    """Erase recorded history. Returns what was removed.
+
+    Scoped to one user when given an id, because a shared bot must never let
+    one person's reset delete another's record.
+    """
+    rows = _load()
+    if user_id is None:
+        removed = len(rows)
+        _save([])
+        return {"removed": removed, "kept": 0}
+    keep = [r for r in rows if r.get("user_id") not in (None, user_id)]
+    removed = len(rows) - len(keep)
+    _save(keep)
+    return {"removed": removed, "kept": len(keep)}
+
+
+def lifecycle_view(user_id: int, modes=None, exclude_modes=None) -> list[dict]:
+    """Signals to report on, newest first.
+
+    /update and /swingupdate split the same data by timeframe: a swing trade
+    runs for days and does not belong in the same list as this morning's
+    scalps, where it would be buried under them.
+    """
+    out = []
+    for r in _load():
+        if r.get("user_id") not in (None, user_id):
+            continue
+        if modes and r.get("mode") not in modes:
+            continue
+        if exclude_modes and r.get("mode") in exclude_modes:
+            continue
+        out.append(r)
+    out.sort(key=lambda r: r.get("ts") or "", reverse=True)
+    return out

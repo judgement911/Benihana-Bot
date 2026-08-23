@@ -156,15 +156,15 @@ S: dict[str, dict[str, str]] = {
     "sec_other": {EN: "Other", ID: "Lainnya"},
     "help_footer": {
         EN: ("Answers are ENTRY, WAIT or NO TRADE. Confidence is how well the "
-             "strategy's conditions line up; Odds is the modelled chance of a "
-             "target paying before the stop; Exp is that in R. Run "
-             "/backtest intraday calibrate to replace the model's estimate "
-             "with measured results."),
+             "strategy's conditions line up; Odds is the chance of a target "
+             "paying before the stop; Exp is that in R. /calibration says "
+             "whether those odds were measured on real trades or are still "
+             "the model's estimate."),
         ID: ("Jawaban berupa ENTRY, WAIT, atau NO TRADE. Keyakinan menunjukkan "
-             "seberapa cocok syarat strategi; Peluang adalah perkiraan target "
-             "tercapai sebelum stop; Ekspektasi menyatakannya dalam R. Jalankan "
-             "/backtest intraday calibrate untuk mengganti estimasi model "
-             "dengan hasil terukur."),
+             "seberapa cocok syarat strategi; Peluang adalah kemungkinan target "
+             "tercapai sebelum stop; Ekspektasi menyatakannya dalam R. "
+             "/calibration menunjukkan apakah peluang itu terukur dari trade "
+             "nyata atau masih estimasi model."),
     },
 
     # --------------------------------------------------------------- menus
@@ -202,6 +202,217 @@ S: dict[str, dict[str, str]] = {
         ID: "Pilih salah satu, misalnya <code>/strategy 1</code>",
     },
 
+    # ------------------------------------------------------------ /update
+    "upd_title": {EN: "SIGNAL TRACKER", ID: "PELACAK SINYAL"},
+    "upd_swing_title": {EN: "SWING TRACKER", ID: "PELACAK SWING"},
+    "upd_none": {
+        EN: "No signals being tracked. Ask for one with /signal.",
+        ID: "Belum ada sinyal yang dilacak. Minta satu dengan /signal.",
+    },
+    "upd_none_swing": {
+        EN: "No swing signals running. /signal xauusd swing starts one.",
+        ID: "Belum ada sinyal swing berjalan. /signal xauusd swing untuk memulai.",
+    },
+    "upd_live": {EN: "Live", ID: "Berjalan"},
+    "upd_done": {EN: "Finished", ID: "Selesai"},
+    "upd_hint": {
+        EN: "Updates arrive when the tracker runs. On a free host that is "
+            "once a day — see /help.",
+        ID: "Pembaruan masuk saat pelacak berjalan. Di host gratis sekali "
+            "sehari — lihat /help.",
+    },
+
+    # ---------------------------------------------------------- /resetdata
+    "dt_now": {EN: "now", ID: "sekarang"},
+    "dt_in_dh": {EN: "in {d}d {h}h", ID: "{d} hari {h} jam lagi"},
+    "dt_in_hm": {EN: "in {h}h {m}m", ID: "{h} jam {m} menit lagi"},
+    "dt_in_m": {EN: "in {m}m", ID: "{m} menit lagi"},
+    "st_no_filter": {EN: "no filter", ID: "tanpa filter"},
+    "st_today": {
+        EN: "Today: <b>{n}</b> closed", ID: "Hari ini: <b>{n}</b> selesai",
+    },
+    "st_nothing_today": {
+        EN: "Nothing closed today yet",
+        ID: "Belum ada yang selesai hari ini",
+    },
+    "st_trades": {EN: "Trades", ID: "Trade"},
+    "st_drawdown": {EN: "Drawdown", ID: "Drawdown"},
+    "st_target": {EN: "Target", ID: "Target"},
+    "st_set_limits": {
+        EN: "<i>/management on to set limits</i>",
+        ID: "<i>/management on untuk mengatur batas</i>",
+    },
+    "hist_summary": {
+        EN: "<i>{w}W · {l}L · {r}R over the last {n}</i>",
+        ID: "<i>{w}M · {l}K · {r}R dari {n} terakhir</i>",
+    },
+    "sym_title": {EN: "🗺 <b>TRADABLE MARKETS</b>", ID: "🗺 <b>PASAR TERSEDIA</b>"},
+    "sym_cost": {EN: "cost to trade", ID: "biaya transaksi"},
+    "sym_nicknames": {
+        EN: ("<i>Nicknames work: gold, cable, guppy, kiwi, aussie, fiber.</i>\n"
+             "<i>Crypto, indices and energy are excluded — they need a paid "
+             "data plan.</i>"),
+        ID: ("<i>Nama panggilan bisa: gold, cable, guppy, kiwi, aussie, "
+             "fiber.</i>\n<i>Kripto, indeks dan energi tidak tersedia — "
+             "perlu paket data berbayar.</i>"),
+    },
+    "conf_title": {
+        EN: "🎯 <b>Confidence filter set</b>",
+        ID: "🎯 <b>Filter keyakinan diatur</b>",
+    },
+    "conf_off_title": {
+        EN: "🎯 <b>Confidence filter off</b>",
+        ID: "🎯 <b>Filter keyakinan nonaktif</b>",
+    },
+    "conf_band_relaxed": {
+        EN: "🟩 relaxed — most setups pass",
+        ID: "🟩 longgar — hampir semua setup lolos",
+    },
+    "conf_band_balanced": {EN: "🟨 balanced", ID: "🟨 seimbang"},
+    "conf_band_strict": {
+        EN: "🟧 strict — expect few signals",
+        ID: "🟧 ketat — sinyal akan jarang",
+    },
+    "conf_band_very_strict": {
+        EN: "🟥 very strict — you may see nothing for days",
+        ID: "🟥 sangat ketat — bisa berhari-hari tanpa sinyal",
+    },
+    "sub_yours": {EN: "🎟 <b>YOUR ACCESS</b>", ID: "🎟 <b>AKSES ANDA</b>"},
+    "sub_owner": {
+        EN: "👑 Owner — unlimited, never expires.",
+        ID: "👑 Pemilik — tanpa batas, tidak pernah kedaluwarsa.",
+    },
+    "sub_active": {
+        EN: "✅ Active until <b>{until}</b>\n⏳ {days} days left",
+        ID: "✅ Aktif sampai <b>{until}</b>\n⏳ sisa {days} hari",
+    },
+    "sub_expired": {
+        EN: ("⛔ No active subscription.\n\nAsk the owner for access and "
+             "give them your ID: <code>{uid}</code>"),
+        ID: ("⛔ Tidak ada langganan aktif.\n\nMinta akses ke pemilik dan "
+             "berikan ID Anda: <code>{uid}</code>"),
+    },
+    "sub_soon": {
+        EN: "⚠️ Your access ends in {days} days.",
+        ID: "⚠️ Akses Anda berakhir dalam {days} hari.",
+    },
+    "sub_denied": {
+        EN: ("⛔ <b>Subscription required</b>\n\nThis bot is private. Send "
+             "your ID to the owner to get access:\n<code>{uid}</code>"),
+        ID: ("⛔ <b>Perlu langganan</b>\n\nBot ini privat. Kirim ID Anda ke "
+             "pemilik untuk mendapatkan akses:\n<code>{uid}</code>"),
+    },
+    "sub_granted": {
+        EN: ("✅ Granted <b>{days}</b> days to <code>{uid}</code>\n"
+             "Now active until <b>{until}</b>"),
+        ID: ("✅ Memberikan <b>{days}</b> hari ke <code>{uid}</code>\n"
+             "Aktif sampai <b>{until}</b>"),
+    },
+    "sub_revoked": {
+        EN: "🚫 Access removed for <code>{uid}</code>.",
+        ID: "🚫 Akses dicabut untuk <code>{uid}</code>.",
+    },
+    "sub_nothing": {
+        EN: "Nothing to revoke — <code>{uid}</code> had no subscription.",
+        ID: "Tidak ada yang dicabut — <code>{uid}</code> tidak berlangganan.",
+    },
+    "sub_grant_usage": {
+        EN: ("Usage: <code>/grant &lt;user_id&gt; &lt;days&gt; [plan]</code>\n"
+             "Example: <code>/grant 123456789 30 standard</code>"),
+        ID: ("Cara: <code>/grant &lt;user_id&gt; &lt;hari&gt; [paket]</code>\n"
+             "Contoh: <code>/grant 123456789 30 standard</code>"),
+    },
+    "sub_list_empty": {
+        EN: "No subscriptions on record.",
+        ID: "Belum ada langganan tercatat.",
+    },
+    "sub_owner_only": {
+        EN: "That command is for the owner only.",
+        ID: "Perintah itu hanya untuk pemilik.",
+    },
+    "sub_off": {
+        EN: ("<i>Subscriptions are switched off — everyone allowed by "
+             "ALLOWED_USER_IDS can use the bot. Set "
+             "SUBSCRIPTIONS_ENABLED=1 to turn them on.</i>"),
+        ID: ("<i>Langganan sedang nonaktif — semua yang ada di "
+             "ALLOWED_USER_IDS bisa memakai bot. Set "
+             "SUBSCRIPTIONS_ENABLED=1 untuk mengaktifkan.</i>"),
+    },
+    "sec_open": {EN: "Open positions", ID: "Posisi terbuka"},
+    "ev_nfp": {EN: "Non-farm payrolls", ID: "Non-farm payrolls"},
+    "ev_nfp_note": {
+        EN: "first Friday, 08:30 New York",
+        ID: "Jumat pertama, 08:30 New York",
+    },
+    "ev_weekly_close": {EN: "Weekly close", ID: "Penutupan mingguan"},
+    "ev_weekly_close_note": {
+        EN: "spreads widen, then the weekend gap",
+        ID: "spread melebar, lalu gap akhir pekan",
+    },
+    "news_title": {
+        EN: "🗓 <b>EVENT RISK</b>", ID: "🗓 <b>RISIKO EVENT</b>",
+    },
+    "news_none": {
+        EN: "Nothing scheduled in the next {days} days.",
+        ID: "Tidak ada jadwal dalam {days} hari ke depan.",
+    },
+    "news_blackout": {
+        EN: ("🚨 <b>{name}</b> is inside its window right now "
+             "({before} min before to {after} min after).\n"
+             "Spreads widen and stops get run. Trading through it is a "
+             "coin flip with a worse price."),
+        ID: ("🚨 <b>{name}</b> sedang dalam jendela rilis "
+             "({before} menit sebelum sampai {after} menit sesudah).\n"
+             "Spread melebar dan stop mudah kena. Trading saat ini seperti "
+             "melempar koin dengan harga yang lebih buruk."),
+    },
+    "news_clear": {
+        EN: "✅ No high-impact release inside its window right now.",
+        ID: "✅ Tidak ada rilis berdampak tinggi saat ini.",
+    },
+    "news_tz_approx": {
+        EN: ("⚠️ <i>This host has no timezone database, so release times "
+             "are US Eastern Standard — correct in winter, one hour early "
+             "during US daylight saving.</i>"),
+        ID: ("⚠️ <i>Host ini tidak punya basis data zona waktu, jadi waktu "
+             "rilis memakai US Eastern Standard — tepat saat musim dingin, "
+             "satu jam lebih awal saat daylight saving AS.</i>"),
+    },
+    "news_howto": {
+        EN: ("<i>The bot has no news feed. It computes what a calendar rule "
+             "can prove — payrolls is always the first Friday — and reads "
+             "anything else you add to events.json. It never guesses a "
+             "date.</i>"),
+        ID: ("<i>Bot ini tidak punya feed berita. Yang dihitung hanya yang "
+             "bisa dipastikan dari aturan kalender — payrolls selalu Jumat "
+             "pertama — ditambah apa pun yang Anda isi di events.json. Bot "
+             "tidak pernah menebak tanggal.</i>"),
+    },
+    "reset_confirm": {
+        EN: ("🗑 <b>Erase all your records?</b>\n\n"
+             "This wipes every signal behind /stats, /daily, /weekly, "
+             "/monthly, /history and /status. It cannot be undone.\n\n"
+             "Send <code>/resetdata yes</code> to confirm."),
+        ID: ("🗑 <b>Hapus semua catatan Anda?</b>\n\n"
+             "Ini menghapus semua sinyal di balik /stats, /daily, /weekly, "
+             "/monthly, /history dan /status. Tidak bisa dibatalkan.\n\n"
+             "Kirim <code>/resetdata yes</code> untuk konfirmasi."),
+    },
+    "reset_done": {
+        EN: ("🗑 <b>Records erased</b>\n\n{n} signals removed. /stats, "
+             "/daily, /weekly, /monthly, /history and /status all start "
+             "from zero.\n\n<i>Risk management settings were left alone — "
+             "use /management off to clear those.</i>"),
+        ID: ("🗑 <b>Catatan dihapus</b>\n\n{n} sinyal dihapus. /stats, "
+             "/daily, /weekly, /monthly, /history dan /status mulai dari "
+             "nol.\n\n<i>Pengaturan manajemen risiko tidak diubah — "
+             "gunakan /management off untuk menghapusnya.</i>"),
+    },
+    "reset_empty": {
+        EN: "Nothing to erase — no signals recorded yet.",
+        ID: "Tidak ada yang dihapus — belum ada sinyal tercatat.",
+    },
+
     # ------------------------------------------------------- management (§17)
     "mgmt_form": {
         EN: ("🛡️ <b>Risk and money management</b>\n\n"
@@ -229,24 +440,29 @@ S: dict[str, dict[str, str]] = {
         EN: ("🛡️ <b>Risk management is on</b>\n\n"
              "💰 Balance: {balance}\n"
              "⚖️ Risk per trade: {risk}% = {per_trade}\n"
-             "📉 Daily drawdown limit: {dd}%\n"
+             "📉 Daily drawdown limit: {dd}% ({dd_cash})\n"
              "🔢 Max daily trades: {trades}\n"
-             "🎯 Profit target: +{target}%\n\n"
+             "🎯 Profit target: +{target}% ({target_cash})\n\n"
              "<i>Signals will be sized from this, and will stop when a limit "
              "is reached.</i>"),
         ID: ("🛡️ <b>Manajemen risiko aktif</b>\n\n"
              "💰 Saldo: {balance}\n"
              "⚖️ Risiko per transaksi: {risk}% = {per_trade}\n"
-             "📉 Batas drawdown harian: {dd}%\n"
+             "📉 Batas drawdown harian: {dd}% ({dd_cash})\n"
              "🔢 Maksimal transaksi harian: {trades}\n"
-             "🎯 Target profit: +{target}%\n\n"
+             "🎯 Target profit: +{target}% ({target_cash})\n\n"
              "<i>Sinyal akan dihitung dari ini, dan berhenti saat batas "
              "tercapai.</i>"),
     },
     "mgmt_off": {
-        EN: "<b>Risk and money management has been turned off.</b>",
-        ID: "<b>Manajemen risiko dan modal telah dimatikan.</b>",
+        EN: ("🛡️ <b>Risk and money management is off</b>\n\n"
+             "Your balance, limits and daily counters have been cleared.\n\n"
+             "<i>Set it up again with</i> <code>/management on ...</code>"),
+        ID: ("🛡️ <b>Manajemen risiko dan modal nonaktif</b>\n\n"
+             "Saldo, batas, dan penghitung harian Anda telah dihapus.\n\n"
+             "<i>Aktifkan lagi dengan</i> <code>/management on ...</code>"),
     },
+    "max_dd_today": {EN: "Worst drawdown today", ID: "Drawdown terburuk hari ini"},
     "mgmt_max_trades": {
         EN: ("🛡️ <b>Risk Management</b>\n\n"
              "Maximum daily trades reached: {n}/{max}.\n\n"
@@ -325,6 +541,31 @@ S: dict[str, dict[str, str]] = {
         ID: "Perintah tidak dikenal. Coba /help",
     },
 }
+
+
+DAYS = {
+    EN: ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"),
+    ID: ("Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"),
+}
+MONTHS = {
+    EN: ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
+    ID: ("Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
+         "Jul", "Agu", "Sep", "Okt", "Nov", "Des"),
+}
+
+
+def date_short(dt, lang: str = EN) -> str:
+    """'Fri 04 Sep' in the reader's language."""
+    d = DAYS.get(lang, DAYS[EN])[dt.weekday()]
+    m = MONTHS.get(lang, MONTHS[EN])[dt.month - 1]
+    return f"{d} {dt.day:02d} {m}"
+
+
+def date_long(dt, lang: str = EN) -> str:
+    """'04 Sep 2026' in the reader's language."""
+    m = MONTHS.get(lang, MONTHS[EN])[dt.month - 1]
+    return f"{dt.day:02d} {m} {dt.year}"
 
 
 def t(key: str, lang: str = EN, **kw) -> str:

@@ -62,6 +62,12 @@ class Strategy:
     blurb_en: str
     blurb_id: str
     evaluate: Callable
+    icon: str = "♟️"
+    # Where it works, taken from the measured backtest rather than from the
+    # idea behind it. "best for X, good for Y" is a claim, so it has to come
+    # from numbers — see performance.py and measured.json.
+    best_en: str = ""
+    best_id: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -144,6 +150,9 @@ def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
     out["probability"] = prob.estimate(
         score=out["score"], targets_r=spec.tp_multiples, room_rr=room_rr,
         mode=spec.name, cost_r=inst.cost_r(out["levels"]["risk_points"]),
+        # Each ruleset is calibrated against its own measured hit rates;
+        # pooling them would let a breakout borrow a fade's numbers.
+        strategy=out.get("strategy"),
     )
     return out
 
@@ -384,21 +393,27 @@ REGISTRY: dict[str, Strategy] = {
         "retracement into the EMA20 zone when momentum turns back.",
         "Pullback tren. Menunggu tren terbentuk, lalu masuk saat harga "
         "retrace ke zona EMA20 dan momentum berbalik.",
-        _evaluate_ronin),
+        _evaluate_ronin,
+        icon="🥷", best_en="Best for swing",
+        best_id="Terbaik untuk swing"),
     "crimson": Strategy(
         "crimson", "Crimson Flow",
         "Momentum breakout. Takes the break of a 20-bar channel in the "
         "higher timeframe's direction, with ADX rising and range expanding.",
         "Breakout momentum. Masuk saat channel 20-bar jebol searah timeframe "
         "besar, dengan ADX naik dan range melebar.",
-        evaluate_crimson),
+        evaluate_crimson,
+        icon="🌊", best_en="Best for swing, good for intraday",
+        best_id="Terbaik untuk swing, bagus untuk intraday"),
     "kage": Strategy(
         "kage", "Kage Protocol",
         "Volatility squeeze. Waits for Bollinger width to compress to a "
         "multi-week low, then takes the first close out of the range.",
         "Squeeze volatilitas. Menunggu lebar Bollinger menyempit ke level "
         "terendah, lalu masuk pada close pertama di luar range.",
-        evaluate_kage),
+        evaluate_kage,
+        icon="🥋", best_en="Weak everywhere — swing only, barely",
+        best_id="Lemah di semua mode — hanya swing, itupun tipis"),
 }
 
 ORDER = ("ronin", "crimson", "kage")
@@ -562,7 +577,8 @@ REGISTRY["zanshin"] = Strategy(
     "Sweep likuiditas. Menunggu harga menyapu stop di balik level yang sudah "
     "teruji dua kali, lalu close kembali menembusnya, dan masuk dengan stop "
     "di balik ekor candle.",
-    evaluate_zanshin)
+    evaluate_zanshin,
+    icon="🗡️", best_en="Best for swing, weak elsewhere", best_id="Terbaik untuk swing, lemah di mode lain")
 ORDER = ("ronin", "crimson", "kage", "zanshin")
 
 
@@ -690,7 +706,8 @@ REGISTRY["shogun"] = Strategy(
     "other side and exits after 12 bars on the clock. Gold 5min, raw spread.",
     "Fade overextension. Saat z-score 20-bar melewati 2.5 sigma, ambil arah "
     "sebaliknya dan keluar setelah 12 bar. Gold 5min, spread raw.",
-    evaluate_shogun)
+    evaluate_shogun,
+    icon="⚡", best_en="Best for intraday, avoid swing", best_id="Terbaik untuk intraday, hindari swing")
 ORDER = ("ronin", "crimson", "kage", "zanshin", "shogun")
 
 
@@ -775,5 +792,6 @@ REGISTRY["auto"] = Strategy(
     "instrument and timeframe, and refuses to signal where none is proven.",
     "Memilih strategi dengan ekspektasi TERUKUR terbaik untuk instrumen dan "
     "timeframe ini, dan menolak memberi sinyal jika belum ada yang terbukti.",
-    evaluate_auto)
+    evaluate_auto,
+    icon="🤖", best_en="Picks whichever is proven for that mode", best_id="Memilih yang terbukti untuk mode itu")
 ORDER = ("ronin", "crimson", "kage", "zanshin", "shogun", "auto")

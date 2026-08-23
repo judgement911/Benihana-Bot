@@ -768,6 +768,503 @@ def check_payoff_agreement() -> bool:
     return ok
 
 
+
+def _inspect_bodies(bodies, label, failures) -> bool:
+    """Every reply must survive Telegram: short enough, and valid HTML."""
+    import html as _html
+    import re as _re
+    ok = True
+    for body in bodies:
+        if len(body) > 4096:
+            failures.append(f"{label} replied {len(body)} chars (max 4096)")
+            ok = False
+        # Telegram rejects the whole message on a malformed tag, so an
+        # unescaped stray '<' is a delivery failure, not a cosmetic one.
+        stripped = _re.sub(r"</?(b|i|u|s|code|pre|a|tg-spoiler|blockquote)"
+                           r"(\s[^>]*)?>", "", body)
+        if "<" in stripped or ">" in stripped:
+            failures.append(f"{label} has raw angle brackets")
+            ok = False
+        if _html.unescape(body).strip() == "":
+            failures.append(f"{label} replied with only markup")
+            ok = False
+    return ok
+
+
+def check_commands() -> bool:
+    """Drive every offline command through the real dispatcher.
+
+    This exists because a handler can be deleted, renamed or left referencing
+    a helper that was never written, and nothing else in this suite would
+    notice — the bot would import fine and then fail in the user's chat. So
+    the assertion is deliberately end-to-end: build a message, hand it to
+    handle_message, and demand a well-formed reply.
+    """
+    import html as _html
+    import inspect as _inspect
+    import re as _re
+    import flask_app as F
+    import journal as J
+    import users as U
+
+    src_of_dispatch = _inspect.getsource(F.handle_message)
+    UID = 90001
+    real_send, real_allowed = F.send, F.allowed
+    captured: list[str] = []
+    F.send = lambda cid, txt, **k: captured.append(txt)
+    F.allowed = lambda uid: True
+
+    # Commands that need the network (a quote, a candle history, an API key)
+    # are out of scope here; this checks wiring and rendering, not data.
+    NETWORKED = {"/signal", "/scan", "/backtest", "/calibration"}
+    cmds = sorted({m.group(1) for m in
+                   _re.finditer(r'cmd (?:==|in) \(?"(/[a-z]+)"', src_of_dispatch)}
+                  - NETWORKED)
+    extra = ["/start", "/help", "/menu", "/language", "/language bahasa",
+             "/language english", "/setconf 70", "/setconf off",
+             "/strategy", "/strategy shogun", "/strategy auto",
+             "/daily", "/weekly", "/monthly", "/update", "/swingupdate",
+             "/management", "/resetdata", "/news", "/subscription",
+             "/subs", "/grant", "/grant 123 30", "/revoke", "/revoke 123",
+             "/notacommand"]
+
+    # Every command runs twice, once with risk management off and once with
+    # it on. Half of /status only exists in the second state, so a fixture
+    # that never enables management silently skips the code it is meant to
+    # cover — a renamed helper in that branch passed this check until the
+    # second profile was added.
+    PROFILES = {
+        "management off": dict(
+            language="en", strategy="crimson", min_confidence=0,
+            management=None, day_trades=0, day_pl_usd=0.0,
+            day_peak_usd=0.0, day_trough_usd=0.0),
+        "management on": dict(
+            language="id", strategy="auto", min_confidence=70,
+            management={"enabled": True, "balance_usd": 5240.0,
+                        "start_balance_usd": 5000.0, "risk_pct": 1.0,
+                        "daily_dd_pct": 3.0, "profit_target_pct": 5.0,
+                        "max_daily_trades": 6},
+            day_trades=5, day_pl_usd=240.0,
+            day_peak_usd=300.0, day_trough_usd=-140.0),
+    }
+
+    ok, failures = True, []
+    for profile, settings in PROFILES.items():
+        U.update(UID, **settings)
+        for text in [c for c in cmds] + extra:
+            captured.clear()
+            try:
+                F.handle_message({"chat": {"id": 1}, "from": {"id": UID},
+                                  "text": text})
+            except Exception as exc:                   # noqa: BLE001
+                failures.append(f"[{profile}] {text} raised "
+                                f"{type(exc).__name__}: {exc}")
+                ok = False
+                continue
+            if not captured:
+                failures.append(f"[{profile}] {text} produced no reply")
+                ok = False
+                continue
+            ok &= _inspect_bodies(captured, f"[{profile}] {text}", failures)
+
+    # Every user-facing command must actually change when the language does.
+    # Comparing the two renders for inequality is not enough: one translated
+    # word makes a mostly-English screen pass. So the Indonesian render is
+    # searched for English function words instead. Trading vocabulary is
+    # deliberately left in English throughout this bot ("entry", "lot",
+    # "breakeven"), but "the", "your" and "closed" are prose, and prose in
+    # the Indonesian render means a hardcoded string.
+    #
+    # Two- and three-letter words are deliberately absent from the list.
+    # "in" looks like a certain tell until "All-in-One" splits into three
+    # words and every screen naming the strategy fails.
+    ENGLISH_TELLS = {
+        "the", "and", "for", "with", "your", "you", "this", "that", "from",
+        "have", "has", "been", "will", "are", "was", "were", "they", "their",
+        "what", "when", "which", "would", "could", "should", "about",
+        "there", "than", "then", "over", "under", "after", "before",
+        "every", "each", "only", "just", "still", "does", "cannot", "left",
+        "closed", "today", "yet", "most", "few", "days", "day", "into",
+    }
+    BILINGUAL = ["/status", "/history", "/setconf 70", "/symbols", "/help",
+                 "/news", "/settings", "/management", "/resetdata",
+                 "/strategy", "/daily", "/subscription", "/update"]
+    U.update(UID, **PROFILES["management on"])
+    for text in BILINGUAL:
+        renders = {}
+        for lang in ("en", "id"):
+            U.update(UID, language=lang)
+            captured.clear()
+            F.handle_message({"chat": {"id": 1}, "from": {"id": UID},
+                              "text": text})
+            renders[lang] = captured[0] if captured else ""
+        if renders["en"] == renders["id"]:
+            failures.append(f"{text} renders identically in both languages "
+                            f"— text is probably hardcoded English")
+            ok = False
+            continue
+        # Command syntax inside <code> is legitimately English — the user
+        # types "/management on", not a translation of it — so strip those
+        # spans before looking for prose.
+        prose = _re.sub(r"<code>.*?</code>", " ", renders["id"], flags=_re.S)
+        words = set(_re.findall(r"[a-z]+", _html.unescape(prose).lower()))
+        leaked = sorted(words & ENGLISH_TELLS)
+        if leaked:
+            failures.append(f"{text} leaks English into the Indonesian "
+                            f"render: {', '.join(leaked[:6])}")
+            ok = False
+
+    U.update(UID, **PROFILES["management off"])
+
+    # An unknown command must still answer, and known ones must not fall
+    # through to that same answer.
+    captured.clear()
+    F.handle_message({"chat": {"id": 1}, "from": {"id": UID},
+                      "text": "/notacommand"})
+    unknown = captured[0] if captured else ""
+    for text in ["/status", "/symbols", "/history", "/setconf 70", "/update"]:
+        captured.clear()
+        F.handle_message({"chat": {"id": 1}, "from": {"id": UID}, "text": text})
+        if captured and captured[0] == unknown:
+            failures.append(f"{text} fell through to the unknown-command reply")
+            ok = False
+
+    F.send, F.allowed = real_send, real_allowed
+    J.wipe(UID)
+    U.update(UID, management=None)
+
+    if ok:
+        print(f"  commands: {(len(cmds) + len(extra)) * 2} dispatched "
+              f"across 2 account states, {len(BILINGUAL)} checked for "
+              f"English leaking into Indonesian, all render clean")
+    else:
+        for f in failures[:8]:
+            print(f"  x {f}")
+    return ok
+
+
+
+def check_calibration() -> bool:
+    """The calibration lookup must prefer the most specific measured table,
+    fall back cleanly, and never break monotonicity.
+
+    Written after finding that the middle rung of a three-target ladder was
+    never calibrated at all: TP1 and TP3 were measured while TP2 fell through
+    to the model, which made the least reliable number on the signal the one
+    sitting between two reliable ones.
+    """
+    cal = {
+        "generated": "2026-01-01T00:00:00+00:00",
+        "ladder": [1.0, 2.0, 3.0],
+        "modes": {"intraday": {
+            "trades": 900, "tp1": 0.50, "tp2": 0.30, "final": 0.20,
+            "buckets": {"70-79": {"n": 300, "tp1": 0.55, "tp2": 0.34,
+                                  "final": 0.22}}}},
+        "strategies": {"shogun": {"intraday": {
+            "trades": 400, "tp1": 0.62, "tp2": 0.41, "final": 0.28,
+            "buckets": {"70-79": {"n": 150, "tp1": 0.66, "tp2": 0.45,
+                                  "final": 0.31}}}}},
+    }
+    ok = True
+
+    def run(strategy):
+        return prob.estimate(score=75, targets_r=[1.0, 2.0, 3.0], room_rr=3.5,
+                             mode="intraday", cal=cal, strategy=strategy)
+
+    # 1. every rung is measured, including the middle one
+    pooled = run(None)
+    for i, row in enumerate(pooled["targets"]):
+        if row["source"] == "model":
+            print(f"  x rung {row['r']}R fell through to the model")
+            ok = False
+
+    # 2. a strategy with its own table uses it, not the pooled one
+    own = run("shogun")
+    if not all(t["source"] == "strategy-calibrated" for t in own["targets"]):
+        print("  x shogun did not use its own table")
+        ok = False
+    if own["targets"][0]["p"] <= pooled["targets"][0]["p"]:
+        print("  x shogun's higher measured TP1 did not raise its probability")
+        ok = False
+
+    # 3. a strategy with no table of its own falls back rather than failing
+    back = run("kage")
+    if [t["p"] for t in back["targets"]] != [t["p"] for t in pooled["targets"]]:
+        print("  x fallback to the pooled table did not match the pooled result")
+        ok = False
+
+    # 4. monotone: a ladder cannot reach 3R without passing 2R
+    for label, res in (("pooled", pooled), ("shogun", own), ("kage", back)):
+        ps = [t["p"] for t in res["targets"]]
+        if any(b > a + 1e-9 for a, b in zip(ps, ps[1:])):
+            print(f"  x {label} probabilities are not non-increasing: {ps}")
+            ok = False
+
+    # 5. a thin bucket must be ignored, not trusted
+    thin = {"modes": {"intraday": {"trades": 0, "buckets": {
+        "70-79": {"n": 2, "tp1": 0.99, "tp2": 0.99, "final": 0.99}}}}}
+    r = prob.estimate(score=75, targets_r=[1.0, 2.0, 3.0], room_rr=3.5,
+                      mode="intraday", cal=thin)
+    if any(t["source"] != "model" for t in r["targets"]):
+        print("  x a 2-trade bucket was used as if it were evidence")
+        ok = False
+
+    # 6. a missing or malformed file leaves the model untouched
+    for junk in ({}, {"modes": None}, {"modes": {"intraday": "nonsense"}}):
+        r = prob.estimate(score=75, targets_r=[1.0, 2.0], room_rr=2.5,
+                          mode="intraday", cal=junk)
+        if any(t["source"] != "model" for t in r["targets"]):
+            print(f"  x malformed calibration {junk} was trusted")
+            ok = False
+
+    if ok:
+        print("  calibration: every rung measured, strategy table preferred, "
+              "thin buckets ignored")
+    return ok
+
+
+
+def check_news() -> bool:
+    """Event risk is computed from calendar rules, so the rules must hold.
+
+    The blackout window is the part worth testing hardest: an earlier version
+    read "clear" from the moment a release landed onwards, because the helper
+    it used rolls forward to the next month as soon as the current one is in
+    the past. It reported safety exactly during the half hour it existed to
+    warn about.
+    """
+    import calendar as _cal
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    import news
+
+    ok = True
+
+    # 1. the first-Friday rule, at 08:30 New York, for three years
+    for y in (2026, 2027, 2028):
+        for m in range(1, 13):
+            ny = news._first_friday(y, m).astimezone(news.NY)
+            want = min(d for d in range(1, 8) if _cal.weekday(y, m, d) == 4)
+            if (ny.day, ny.hour, ny.minute) != (want, 8, 30):
+                print(f"  x NFP {y}-{m:02d} computed as {ny}")
+                ok = False
+
+    # 2. New York time, not a frozen UTC offset — the US moves its clocks
+    if news._first_friday(2027, 1).hour == news._first_friday(2027, 7).hour:
+        print("  x NFP ignores US daylight saving")
+        ok = False
+
+    # 3. the blackout covers the whole window, including during and after
+    mid = news._first_friday(2026, 9)
+    for off, want in ((-60, False), (-30, True), (0, True),
+                      (20, True), (30, True), (31, False)):
+        got = news.blackout(mid + _td(minutes=off)) is not None
+        if got != want:
+            print(f"  x blackout at {off:+d} min: got {got}, wanted {want}")
+            ok = False
+
+    # 4. a host with no timezone database must lose the calendar's accuracy,
+    #    not the bot: news.py is imported by flask_app, so an exception here
+    #    would take every command down for the sake of one feature
+    if not isinstance(news.TZ_EXACT, bool):
+        print("  x news does not report whether its timezone is exact")
+        ok = False
+    if news.TZ_EXACT and news._first_friday(2027, 7).hour == \
+            news._first_friday(2027, 1).hour:
+        print("  x an exact timezone still ignored daylight saving")
+        ok = False
+
+    # 5. upcoming is ordered and inside the horizon
+    now = _dt.now(_tz.utc)
+    up = news.upcoming(now, days=14)
+    if up != sorted(up, key=lambda e: e.when_utc):
+        print("  x upcoming events are not in time order")
+        ok = False
+    if any(e.when_utc < now or e.when_utc > now + _td(days=14) for e in up):
+        print("  x upcoming returned an event outside the horizon")
+        ok = False
+
+    # 6. a broken events.json must be ignored, never raised
+    import tempfile, os as _os
+    real = news.EVENTS_FILE
+    for junk in ("not json at all", "{}", '[{"utc": "nonsense"}]', "[1,2,3]"):
+        p = _os.path.join(tempfile.mkdtemp(), "events.json")
+        open(p, "w").write(junk)
+        news.EVENTS_FILE = p
+        try:
+            news.upcoming(now)
+        except Exception as exc:                        # noqa: BLE001
+            print(f"  x malformed events.json raised {type(exc).__name__}")
+            ok = False
+    # 7. a well-formed user event is picked up
+    p = _os.path.join(tempfile.mkdtemp(), "events.json")
+    soon = (now + _td(days=2)).isoformat()
+    open(p, "w").write(f'[{{"name":"CPI","utc":"{soon}","impact":"high"}}]')
+    news.EVENTS_FILE = p
+    if not any(e.name == "CPI" for e in news.upcoming(now)):
+        print("  x a valid user event was not picked up")
+        ok = False
+    news.EVENTS_FILE = real
+
+    if ok:
+        print("  news: first-Friday rule holds, DST respected, blackout "
+              "covers the release itself")
+    return ok
+
+
+
+def check_subscriptions() -> bool:
+    """Access control, which is the one place a bug costs money or trust.
+
+    The properties worth guaranteeing are that the operator cannot lock
+    themselves out, that expiry is a fact about a date rather than about a
+    job having run, and that renewing early does not destroy time already
+    paid for.
+    """
+    import os as _os
+    import tempfile as _tf
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    import config as _C
+    import subscriptions as S
+
+    real_store, real_owner = S.STORE, getattr(_C, "OWNER_IDS", set())
+    S.STORE = _os.path.join(_tf.mkdtemp(), "subs.json")
+    _C.OWNER_IDS = {111}
+    ok = True
+    now = _dt.now(_tz.utc)
+
+    # 1. the owner is never a customer
+    if not S.active(111) or S.days_left(111) != float("inf"):
+        print("  x the owner is not unconditionally allowed")
+        ok = False
+    # ... and stays in even with the store deleted underneath them
+    _os.unlink(S.STORE) if _os.path.exists(S.STORE) else None
+    if not S.active(111):
+        print("  x losing the store locked the owner out")
+        ok = False
+
+    # 2. a stranger is out until granted
+    if S.active(222):
+        print("  x an unknown user was allowed in")
+        ok = False
+    S.grant(222, 30, granted_by=111)
+    if not S.active(222):
+        print("  x a granted user was not allowed in")
+        ok = False
+
+    # 3. renewing early adds time rather than replacing it
+    S.grant(222, 30, granted_by=111)
+    if not 59 < S.days_left(222) <= 60:
+        print(f"  x early renewal gave {S.days_left(222):.1f} days, wanted ~60")
+        ok = False
+
+    # 4. expiry is evaluated against the clock, not swept by a job
+    if S.active(222, now=now + _td(days=61)):
+        print("  x a lapsed subscription still counted as active")
+        ok = False
+    if not S.active(222, now=now + _td(days=59)):
+        print("  x a live subscription was treated as lapsed")
+        ok = False
+
+    # 5. revoke is immediate and idempotent
+    if not S.revoke(222) or S.active(222) or S.revoke(222):
+        print("  x revoke did not behave as expected")
+        ok = False
+
+    # 6. a corrupt store denies strangers rather than admitting them
+    for junk in ("not json", "[]", '{"222": {"until": "nonsense"}}'):
+        open(S.STORE, "w").write(junk)
+        if S.active(222):
+            print(f"  x a corrupt store ({junk[:20]}) let a stranger in")
+            ok = False
+        if not S.active(111):
+            print("  x a corrupt store locked the owner out")
+            ok = False
+
+    # 7. the gate must not change behaviour until it is switched on
+    import flask_app as F
+    was = _C.SUBSCRIPTIONS_ENABLED
+    _C.SUBSCRIPTIONS_ENABLED = False
+    _C.ALLOWED_USER_IDS = {999}
+    if not F.allowed(999) or F.allowed(222):
+        print("  x the legacy allowlist stopped working with subscriptions off")
+        ok = False
+    _C.SUBSCRIPTIONS_ENABLED = was
+
+    S.STORE, _C.OWNER_IDS = real_store, real_owner
+    if ok:
+        print("  subscriptions: owner never expires, renewal extends, "
+              "a corrupt store denies rather than admits")
+    return ok
+
+
+
+def check_management_lifecycle() -> bool:
+    """Turning risk management off, or hitting the target, must leave nothing
+    behind.
+
+    A parked envelope is the dangerous state: the next trade would be sized
+    from a balance the user last confirmed weeks ago, and the drawdown meter
+    would be measured against a peak from a different day.
+    """
+    import flask_app as F
+    import users as U
+
+    UID = 90002
+    ok = True
+    env = {"enabled": True, "balance_usd": 5000.0,
+           "start_balance_usd": 5000.0, "risk_pct": 1.0, "daily_dd_pct": 3.0,
+           "profit_target_pct": 5.0, "max_daily_trades": 6}
+
+    def dirty():
+        U.update(UID, management=dict(env), day_trades=4, day_pl_usd=-30.0,
+                 day_peak_usd=90.0, day_trough_usd=-210.0)
+
+    def clean(label):
+        nonlocal ok
+        u = U.get(UID)
+        if u.get("management") is not None:
+            print(f"  x {label} left the envelope in place")
+            ok = False
+        for field in ("day_trades", "day_pl_usd", "day_peak_usd",
+                      "day_trough_usd"):
+            if u.get(field):
+                print(f"  x {label} left {field}={u[field]!r} behind")
+                ok = False
+
+    # 1. explicit off deletes rather than disables
+    dirty()
+    U.management_off(UID)
+    clean("/management off")
+
+    # 2. reaching the target deletes it too, and says so once
+    dirty()
+    if F.check_profit_target(UID) is not None:
+        print("  x the target fired while the account was still below it")
+        ok = False
+    m = dict(env)
+    m["balance_usd"] = 5300.0            # +6%, past the 5% target
+    U.update(UID, management=m)
+    if not F.check_profit_target(UID):
+        print("  x reaching the target produced no message")
+        ok = False
+    clean("hitting the profit target")
+    if F.check_profit_target(UID) is not None:
+        print("  x the target fired a second time after being cleared")
+        ok = False
+
+    # 3. a fresh envelope starts from zero, not from the old day's worst
+    U.update(UID, management=dict(env))
+    if U.max_drawdown_today(U.get(UID)) != 0.0:
+        print("  x a new envelope inherited the previous day's drawdown")
+        ok = False
+
+    U.update(UID, management=None)
+    if ok:
+        print("  management: off and target-hit both delete the envelope, "
+              "counters included")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -805,4 +1302,11 @@ if __name__ == "__main__":
 
     print("\nSignal journal:")
     ok &= check_journal()
+
+    print("\nCommands:")
+    ok &= check_commands()
+    ok &= check_calibration()
+    ok &= check_news()
+    ok &= check_subscriptions()
+    ok &= check_management_lifecycle()
     raise SystemExit(0 if ok else 1)

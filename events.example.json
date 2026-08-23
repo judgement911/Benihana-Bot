@@ -1,0 +1,14 @@
+[
+  {
+    "name": "US CPI",
+    "utc": "2026-09-11T12:30:00+00:00",
+    "impact": "high",
+    "note": "copy the date from any calendar site"
+  },
+  {
+    "name": "FOMC decision",
+    "utc": "2026-09-16T18:00:00+00:00",
+    "impact": "high",
+    "note": "times are UTC, the bot converts to UTC+7"
+  }
+]

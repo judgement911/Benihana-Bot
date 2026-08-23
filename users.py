@@ -39,6 +39,7 @@ DEFAULTS: dict[str, Any] = {
     "day_trades": 0,
     "day_pl_usd": 0.0,
     "day_peak_usd": 0.0,           # high-water mark for drawdown
+    "day_trough_usd": 0.0,         # worst point today, for max drawdown
 }
 
 
@@ -88,6 +89,7 @@ def get(user_id: int) -> dict:
             u["day_trades"] = 0
             u["day_pl_usd"] = 0.0
             u["day_peak_usd"] = 0.0
+            u["day_trough_usd"] = 0.0
         return u
 
 
@@ -99,7 +101,8 @@ def update(user_id: int, **changes) -> dict:
 
         today = today_wib()
         if cur.get("day") != today:
-            cur.update(day=today, day_trades=0, day_pl_usd=0.0, day_peak_usd=0.0)
+            cur.update(day=today, day_trades=0, day_pl_usd=0.0,
+                       day_peak_usd=0.0, day_trough_usd=0.0)
 
         cur.update(changes)
         allu[str(user_id)] = cur
@@ -144,11 +147,15 @@ def management_on(user_id: int, mgmt: dict) -> dict:
 
 
 def management_off(user_id: int) -> dict:
-    u = get(user_id)
-    m = dict(u.get("management") or {})
-    if m:
-        m["enabled"] = False
-    return update(user_id, management=m or None)
+    """Turning it off DELETES the envelope, it does not park it.
+
+    A stale balance and a half-spent daily allowance are worse than no
+    settings at all — they would silently size the next trade from a number
+    the user has forgotten agreeing to. Starting again means /management on
+    with fresh figures, which is the honest default.
+    """
+    return update(user_id, management=None, day_trades=0, day_pl_usd=0.0,
+                  day_peak_usd=0.0, day_trough_usd=0.0)
 
 
 def risk_per_trade_usd(u: dict) -> float | None:
@@ -157,3 +164,15 @@ def risk_per_trade_usd(u: dict) -> float | None:
     if m.get("enabled"):
         return m["balance_usd"] * m["risk_pct"] / 100.0
     return None
+
+
+def drawdown_now(u: dict) -> float:
+    """How far below today's high-water mark the account currently sits."""
+    return min(0.0, float(u.get("day_pl_usd", 0.0))
+               - max(0.0, float(u.get("day_peak_usd", 0.0))))
+
+
+def max_drawdown_today(u: dict) -> float:
+    """The worst it got today, not just where it is now — the number that
+    tells you whether the day was survivable."""
+    return min(0.0, float(u.get("day_trough_usd", 0.0)))

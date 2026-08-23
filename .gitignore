@@ -33,3 +33,8 @@ bakeoff_results.json
 research/out/
 research/*_results.csv
 research/*_ic.csv
+
+# Per-deployment subscriber records — never belongs in the repo
+subscriptions.json
+# User-maintained economic calendar
+events.json

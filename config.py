@@ -254,6 +254,17 @@ ZANSHIN_WEIGHTS = {
     "expansion": 13, "liquidity": 10, "context": 15,
 }
 
+# Shogun Pulse — the one strategy here found by measurement. Phase 2 put the
+# mean-reversion signal at 6-12 bars with p<0.01 on two instruments, so the
+# hold is 12 bars and the exit is the clock, not a target. Thresholds are the
+# ones tested; changing them changes a validated result into an untested one.
+SHOGUN_LOOKBACK = int(_get("SHOGUN_LOOKBACK", "20"))
+SHOGUN_Z = float(_get("SHOGUN_Z", "2.5"))
+SHOGUN_HOLD = int(_get("SHOGUN_HOLD", "12"))
+SHOGUN_STOP_ATR = float(_get("SHOGUN_STOP_ATR", "2.0"))
+SHOGUN_WEIGHTS = {"stretch": 45, "volatility": 20, "session": 15,
+                  "not_trending": 20}
+
 # ------------------------------------------------------------- volatility
 # ATR against its own recent median on the entry timeframe. Real measurement,
 # bucketed for display; nothing here is assigned by mood.

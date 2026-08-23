@@ -38,6 +38,18 @@ S: dict[str, dict[str, str]] = {
     "odds": {EN: "Odds", ID: "Peluang"},
     "exp": {EN: "Exp", ID: "Ekspektasi"},
     "needs": {EN: "Needs", ID: "Menunggu"},
+    "no_odds_timed": {
+        EN: "no target, so no odds quoted",
+        ID: "tanpa target, jadi peluang tidak dihitung",
+    },
+    "order_fade": {
+        EN: "{z} sigma stretched — taken at market",
+        ID: "Terentang {z} sigma — masuk di harga pasar",
+    },
+    "time_exit": {
+        EN: "Exit after {bars} bars (~{dur}) at market — no target",
+        ID: "Keluar setelah {bars} bar (~{dur}) di harga pasar — tanpa target",
+    },
     "levels_move": {
         EN: "Levels move until it fills.",
         ID: "Level bergerak sampai order terisi.",

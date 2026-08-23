@@ -107,6 +107,7 @@ def simulate(df: pd.DataFrame, signal: np.ndarray, stop_dist: np.ndarray,
     o = df["open"].to_numpy(float)
     h = df["high"].to_numpy(float)
     l = df["low"].to_numpy(float)
+    c_arr = df["close"].to_numpy(float)
     n = len(df)
     mults = np.asarray(target_mults, float)
     k = len(mults)
@@ -149,7 +150,20 @@ def simulate(df: pd.DataFrame, signal: np.ndarray, stop_dist: np.ndarray,
         else:
             exit_reason, i_exit = "timeout", min(j + max_bars, n) - 1
 
-        r_gross = (-1.0 if hit == 0 else float(mults[:hit].sum() / k))
+        if exit_reason == "timeout":
+            # A trade closed by the clock exits at the market, so it is worth
+            # whatever it is worth — scoring it as a full stop-out was simply
+            # wrong, and it makes any time-exit strategy untestable because
+            # every one of its trades ends this way.
+            r_gross = d * (c_arr[i_exit] - entry) / risk
+            if hit:
+                # Slices already banked keep their value; only the remainder
+                # is marked to market.
+                banked = float(mults[:hit].sum() / k)
+                remaining = (k - hit) / k
+                r_gross = banked + remaining * d * (c_arr[i_exit] - entry) / risk
+        else:
+            r_gross = (-1.0 if hit == 0 else float(mults[:hit].sum() / k))
         cost = costs.r_for(risk)
         trades.append(Trade(i, i_exit, d, entry, stop, tuple(targets), hit,
                             r_gross, r_gross - cost, i_exit - j, exit_reason))

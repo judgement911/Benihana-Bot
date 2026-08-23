@@ -24,6 +24,8 @@ def load(pair="xauusd", tf="5min"):
 
 
 def prep(pair="xauusd", tf="5min", cap=None):
+    """cap trims to the LAST n bars. Use it to speed up a scan, never to
+    evaluate a rule — see the note in scalp_validate.gauntlet."""
     df = load(pair, tf)
     if cap:
         df = df.iloc[-cap:]

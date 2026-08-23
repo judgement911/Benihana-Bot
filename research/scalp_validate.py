@@ -14,6 +14,15 @@ harsh: the default answer is no.
   sub-period          three consecutive thirds, all positive?
   cross-instrument    does it exist on EUR/USD, or only where it was found?
   cost sensitivity    how much worse can the spread get before it dies?
+
+cap DEFAULTS TO None, meaning the whole history, and that default matters
+more than anything else in this file. It was 60000 once. A rule discovered
+on the most recent 60000 bars then had those same bars handed back to it as
+its "in-sample" slice, with the split carving validation and out-of-sample
+out of the discovery window itself — while 60000 older bars, where the rule
+was significantly negative, were never loaded at all. The gauntlet returned
+ACCEPT on every check. Never shorten the history to the window a rule was
+found in.
 """
 from __future__ import annotations
 import numpy as np
@@ -44,7 +53,7 @@ def _run(d, ff, rule, inst, spread=None):
     return res.r_series(net=True)
 
 
-def gauntlet(rule, name="rule", pair="xauusd", tf="5min", cap=60000,
+def gauntlet(rule, name="rule", pair="xauusd", tf="5min", cap=None,
              seed=0) -> dict:
     """rule(df, feats) -> (signal, stop_points, target_mults, max_bars)"""
     rng = np.random.default_rng(seed)

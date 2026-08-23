@@ -614,6 +614,20 @@ def evaluate(
     if out["order"]["kind"] != "market":
         out["levels"], room_rr, _ = build_levels(out["order"]["price"])
 
+    # Same absolute dealing-cost limit the other rulesets apply. It lives in
+    # both places because this module is its own evaluate(), not a caller of
+    # the shared one, so a guard added only there would leave Ronin — the
+    # default strategy — as the single ruleset without it.
+    _cost_r = inst.cost_r(out["levels"]["risk_points"])
+    if _cost_r is not None and _cost_r > C.MAX_COST_R:
+        out["decision"] = "NO TRADE"
+        out["vetoes"] = list(out.get("vetoes") or []) + [
+            f"Spread alone costs {_cost_r:.0%} of the risk on a "
+            f"{out['levels']['risk_display']} stop — market too thin to trade"
+        ]
+        out["order"] = _order_plan(out["decision"], direction, price, e,
+                                   entry_df, spec, atr_e, inst)
+
     news_hour = now_utc.hour in C.NEWS_WARNING_HOURS_UTC
     if news_hour:
         out["news_warning"] = True

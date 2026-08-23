@@ -51,6 +51,16 @@ ACCOUNT_BALANCE = float(_get("ACCOUNT_BALANCE", "5000"))
 RISK_PCT = float(_get("RISK_PCT", "1.0"))          # % of balance per trade
 CONTRACT_SIZE = float(_get("CONTRACT_SIZE", "100"))
 
+# The most a trade may pay in dealing cost, as a share of its own risk.
+# Cost in R is spread / stop distance, so a tight stop is expensive: the
+# recorded backtests contain trades paying 2.14 R in spread alone to open,
+# which need a 214% edge to break even. Those come from bars where the tape
+# is frozen and ATR collapses, and the existing "dead tape" veto misses them
+# because it is relative — over a long freeze the rolling median ATR falls
+# too, so the ratio looks normal. This limit is absolute and does not care
+# why the stop is small.
+MAX_COST_R = float(_get("MAX_COST_R", "0.20"))
+
 # ---------------------------------------------------------------- data source
 DATA_PROVIDER = _get("DATA_PROVIDER", "twelvedata").lower()
 OANDA_TOKEN = _get("OANDA_TOKEN")

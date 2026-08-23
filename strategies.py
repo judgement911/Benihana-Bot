@@ -126,6 +126,19 @@ def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
     else:
         out["decision"] = "NO TRADE"
 
+    # However good the setup looks, a trade whose spread eats a fifth of its
+    # own risk is not worth taking: it needs a 20% edge just to break even.
+    # This is checked in price units rather than as a volatility ratio,
+    # because the case it exists for — a frozen tape over a weekend — drags
+    # the rolling median down with it and hides from any relative test.
+    cost_r = inst.cost_r(out["levels"]["risk_points"])
+    if cost_r is not None and cost_r > C.MAX_COST_R:
+        out["decision"] = "NO TRADE"
+        out["vetoes"] = list(out.get("vetoes") or []) + [
+            f"Spread alone costs {cost_r:.0%} of the risk on a "
+            f"{out['levels']['risk_display']} stop — market too thin to trade"
+        ]
+
     out["order"] = base._order_plan(out["decision"], direction, float(e["close"]),
                                     e, entry_df, spec, atr_e, inst)
     if out["order"]["kind"] != "market":

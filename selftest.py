@@ -1265,6 +1265,78 @@ def check_management_lifecycle() -> bool:
     return ok
 
 
+
+def check_cost_veto() -> bool:
+    """No ruleset may issue a trade whose spread eats more than MAX_COST_R of
+    its own risk.
+
+    The recorded backtests contain trades paying 2.14 R in spread alone to
+    open — a 214% edge just to break even. They come from a frozen tape,
+    where ATR collapses and the stop shrinks with it. The existing dead-tape
+    veto misses them because it is relative: over a long freeze the rolling
+    median ATR falls too, so the ratio reads normal.
+
+    Every ruleset is checked, because Ronin has its own evaluate() rather
+    than calling the shared one, and a guard added in only one place left
+    the default strategy uncovered.
+    """
+    import instruments as I
+    import strategies as S
+    from indicators import resample_ohlc
+
+    base = synth(kind="uptrend", n=6000)
+    base = base / base["close"].iloc[0] * 4500.0
+    spec = C.MODES["intraday"]
+    e = base
+    t = resample_ohlc(base, "1h")
+    b = resample_ohlc(base, "4h")
+    inst = I.BY_KEY["xauusd"]
+
+    real = I.Instrument.cost_r
+    ok, checked = True, 0
+    try:
+        for key in S.ORDER:
+            if key == "auto":
+                continue
+            for forced, should_veto in ((C.MAX_COST_R * 0.5, False),
+                                        (C.MAX_COST_R * 1.5, True)):
+                I.Instrument.cost_r = lambda self, d, _f=forced: _f
+                plans = vetoed = 0
+                for i in range(400, len(e), 97):
+                    now = e.index[i]
+                    r = S.REGISTRY[key].evaluate(
+                        e.iloc[:i + 1], t[t.index <= now], b[b.index <= now],
+                        spec, now.to_pydatetime(), instrument=inst)
+                    if not r.get("levels"):
+                        continue
+                    plans += 1
+                    hit = any("Spread alone" in v for v in (r.get("vetoes") or []))
+                    if hit:
+                        vetoed += 1
+                        if r["decision"] != "NO TRADE":
+                            print(f"  x {key}: cost veto raised but decision "
+                                  f"stayed {r['decision']}")
+                            ok = False
+                if not plans:
+                    continue
+                checked += plans
+                if should_veto and vetoed != plans:
+                    print(f"  x {key}: only {vetoed}/{plans} plans refused at "
+                          f"cost {forced:.0%}, above the {C.MAX_COST_R:.0%} limit")
+                    ok = False
+                if not should_veto and vetoed:
+                    print(f"  x {key}: {vetoed} plans refused at cost "
+                          f"{forced:.0%}, below the limit")
+                    ok = False
+    finally:
+        I.Instrument.cost_r = real
+
+    if ok:
+        print(f"  cost veto: {checked} plans across every ruleset, refused "
+              f"above {C.MAX_COST_R:.0%} of risk and allowed below")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -1309,4 +1381,5 @@ if __name__ == "__main__":
     ok &= check_news()
     ok &= check_subscriptions()
     ok &= check_management_lifecycle()
+    ok &= check_cost_veto()
     raise SystemExit(0 if ok else 1)

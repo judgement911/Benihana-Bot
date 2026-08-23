@@ -223,6 +223,60 @@ S: dict[str, dict[str, str]] = {
     },
 
     # ---------------------------------------------------------- /resetdata
+    "dt_now": {EN: "now", ID: "sekarang"},
+    "dt_in_dh": {EN: "in {d}d {h}h", ID: "{d} hari {h} jam lagi"},
+    "dt_in_hm": {EN: "in {h}h {m}m", ID: "{h} jam {m} menit lagi"},
+    "dt_in_m": {EN: "in {m}m", ID: "{m} menit lagi"},
+    "st_no_filter": {EN: "no filter", ID: "tanpa filter"},
+    "st_today": {
+        EN: "Today: <b>{n}</b> closed", ID: "Hari ini: <b>{n}</b> selesai",
+    },
+    "st_nothing_today": {
+        EN: "Nothing closed today yet",
+        ID: "Belum ada yang selesai hari ini",
+    },
+    "st_trades": {EN: "Trades", ID: "Trade"},
+    "st_drawdown": {EN: "Drawdown", ID: "Drawdown"},
+    "st_target": {EN: "Target", ID: "Target"},
+    "st_set_limits": {
+        EN: "<i>/management on to set limits</i>",
+        ID: "<i>/management on untuk mengatur batas</i>",
+    },
+    "hist_summary": {
+        EN: "<i>{w}W · {l}L · {r}R over the last {n}</i>",
+        ID: "<i>{w}M · {l}K · {r}R dari {n} terakhir</i>",
+    },
+    "sym_title": {EN: "🗺 <b>TRADABLE MARKETS</b>", ID: "🗺 <b>PASAR TERSEDIA</b>"},
+    "sym_cost": {EN: "cost to trade", ID: "biaya transaksi"},
+    "sym_nicknames": {
+        EN: ("<i>Nicknames work: gold, cable, guppy, kiwi, aussie, fiber.</i>\n"
+             "<i>Crypto, indices and energy are excluded — they need a paid "
+             "data plan.</i>"),
+        ID: ("<i>Nama panggilan bisa: gold, cable, guppy, kiwi, aussie, "
+             "fiber.</i>\n<i>Kripto, indeks dan energi tidak tersedia — "
+             "perlu paket data berbayar.</i>"),
+    },
+    "conf_title": {
+        EN: "🎯 <b>Confidence filter set</b>",
+        ID: "🎯 <b>Filter keyakinan diatur</b>",
+    },
+    "conf_off_title": {
+        EN: "🎯 <b>Confidence filter off</b>",
+        ID: "🎯 <b>Filter keyakinan nonaktif</b>",
+    },
+    "conf_band_relaxed": {
+        EN: "🟩 relaxed — most setups pass",
+        ID: "🟩 longgar — hampir semua setup lolos",
+    },
+    "conf_band_balanced": {EN: "🟨 balanced", ID: "🟨 seimbang"},
+    "conf_band_strict": {
+        EN: "🟧 strict — expect few signals",
+        ID: "🟧 ketat — sinyal akan jarang",
+    },
+    "conf_band_very_strict": {
+        EN: "🟥 very strict — you may see nothing for days",
+        ID: "🟥 sangat ketat — bisa berhari-hari tanpa sinyal",
+    },
     "sub_yours": {EN: "🎟 <b>YOUR ACCESS</b>", ID: "🎟 <b>AKSES ANDA</b>"},
     "sub_owner": {
         EN: "👑 Owner — unlimited, never expires.",
@@ -479,6 +533,31 @@ S: dict[str, dict[str, str]] = {
         ID: "Perintah tidak dikenal. Coba /help",
     },
 }
+
+
+DAYS = {
+    EN: ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"),
+    ID: ("Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"),
+}
+MONTHS = {
+    EN: ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
+    ID: ("Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
+         "Jul", "Agu", "Sep", "Okt", "Nov", "Des"),
+}
+
+
+def date_short(dt, lang: str = EN) -> str:
+    """'Fri 04 Sep' in the reader's language."""
+    d = DAYS.get(lang, DAYS[EN])[dt.weekday()]
+    m = MONTHS.get(lang, MONTHS[EN])[dt.month - 1]
+    return f"{d} {dt.day:02d} {m}"
+
+
+def date_long(dt, lang: str = EN) -> str:
+    """'04 Sep 2026' in the reader's language."""
+    m = MONTHS.get(lang, MONTHS[EN])[dt.month - 1]
+    return f"{dt.day:02d} {m} {dt.year}"
 
 
 def t(key: str, lang: str = EN, **kw) -> str:

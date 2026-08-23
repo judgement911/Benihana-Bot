@@ -800,6 +800,7 @@ def check_commands() -> bool:
     the assertion is deliberately end-to-end: build a message, hand it to
     handle_message, and demand a well-formed reply.
     """
+    import html as _html
     import inspect as _inspect
     import re as _re
     import flask_app as F
@@ -866,6 +867,53 @@ def check_commands() -> bool:
                 continue
             ok &= _inspect_bodies(captured, f"[{profile}] {text}", failures)
 
+    # Every user-facing command must actually change when the language does.
+    # Comparing the two renders for inequality is not enough: one translated
+    # word makes a mostly-English screen pass. So the Indonesian render is
+    # searched for English function words instead. Trading vocabulary is
+    # deliberately left in English throughout this bot ("entry", "lot",
+    # "breakeven"), but "the", "your" and "closed" are prose, and prose in
+    # the Indonesian render means a hardcoded string.
+    #
+    # Two- and three-letter words are deliberately absent from the list.
+    # "in" looks like a certain tell until "All-in-One" splits into three
+    # words and every screen naming the strategy fails.
+    ENGLISH_TELLS = {
+        "the", "and", "for", "with", "your", "you", "this", "that", "from",
+        "have", "has", "been", "will", "are", "was", "were", "they", "their",
+        "what", "when", "which", "would", "could", "should", "about",
+        "there", "than", "then", "over", "under", "after", "before",
+        "every", "each", "only", "just", "still", "does", "cannot", "left",
+        "closed", "today", "yet", "most", "few", "days", "day", "into",
+    }
+    BILINGUAL = ["/status", "/history", "/setconf 70", "/symbols", "/help",
+                 "/news", "/settings", "/management", "/resetdata",
+                 "/strategy", "/daily", "/subscription", "/update"]
+    U.update(UID, **PROFILES["management on"])
+    for text in BILINGUAL:
+        renders = {}
+        for lang in ("en", "id"):
+            U.update(UID, language=lang)
+            captured.clear()
+            F.handle_message({"chat": {"id": 1}, "from": {"id": UID},
+                              "text": text})
+            renders[lang] = captured[0] if captured else ""
+        if renders["en"] == renders["id"]:
+            failures.append(f"{text} renders identically in both languages "
+                            f"— text is probably hardcoded English")
+            ok = False
+            continue
+        # Command syntax inside <code> is legitimately English — the user
+        # types "/management on", not a translation of it — so strip those
+        # spans before looking for prose.
+        prose = _re.sub(r"<code>.*?</code>", " ", renders["id"], flags=_re.S)
+        words = set(_re.findall(r"[a-z]+", _html.unescape(prose).lower()))
+        leaked = sorted(words & ENGLISH_TELLS)
+        if leaked:
+            failures.append(f"{text} leaks English into the Indonesian "
+                            f"render: {', '.join(leaked[:6])}")
+            ok = False
+
     U.update(UID, **PROFILES["management off"])
 
     # An unknown command must still answer, and known ones must not fall
@@ -887,7 +935,8 @@ def check_commands() -> bool:
 
     if ok:
         print(f"  commands: {(len(cmds) + len(extra)) * 2} dispatched "
-              f"across 2 account states, all replied and render clean")
+              f"across 2 account states, {len(BILINGUAL)} checked for "
+              f"English leaking into Indonesian, all render clean")
     else:
         for f in failures[:8]:
             print(f"  x {f}")

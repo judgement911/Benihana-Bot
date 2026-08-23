@@ -183,14 +183,16 @@ def blackout(now_utc: Optional[datetime] = None) -> Optional[Event]:
     return None
 
 
-def _delta(now: datetime, when: datetime) -> str:
+def delta_parts(now: datetime, when: datetime) -> tuple:
+    """(key, fields) for the renderer to translate. Returning formatted
+    English here is what leaked "in 5d 6h" into the Indonesian screen."""
     secs = (when - now).total_seconds()
     if secs < 0:
-        return "now"
+        return "dt_now", {}
     d, rem = divmod(int(secs), 86400)
     h, m = divmod(rem // 60, 60)
     if d:
-        return f"in {d}d {h}h"
+        return "dt_in_dh", {"d": d, "h": h}
     if h:
-        return f"in {h}h {m}m"
-    return f"in {m}m"
+        return "dt_in_hm", {"h": h, "m": m}
+    return "dt_in_m", {"m": m}

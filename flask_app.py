@@ -380,11 +380,11 @@ def do_scan(chat_id: int, user_id: int, mode: str, keys: list = None,
 # --------------------------------------------------------------------------- #
 #  /symbols — what it can trade
 # --------------------------------------------------------------------------- #
-def do_symbols(chat_id: int):
+def do_symbols(chat_id: int, lang: str = i18n.EN):
     """Grouped, with what each one costs to trade — because the spread is the
     number that decides whether a pair is worth taking at all."""
     ICON = {"Forex": "💱", "Metals": "🥇"}
-    out = "🗺 <b>TRADABLE MARKETS</b>\n"
+    out = i18n.t("sym_title", lang) + "\n"
     out += "━━━━━━━━━━━━━━━━━━━━\n\n"
     for label, items in I.grouped().items():
         if not items:
@@ -395,12 +395,10 @@ def do_symbols(chat_id: int):
             out += "   " + " · ".join(names[n:n + 4]) + "\n"
         out += "\n"
     g = I.GOLD
-    out += ("<b>── cost to trade ──</b>\n"
+    out += (f"<b>── {i18n.t('sym_cost', lang)} ──</b>\n"
             f"🥇 {g.display}  spread {g.spread:g} pts\n"
             f"💱 majors  ~{I.BY_KEY['eurusd'].spread / I.BY_KEY['eurusd'].pip:.1f} pips\n\n")
-    out += ("<i>Nicknames work: gold, cable, guppy, kiwi, aussie, fiber.</i>\n"
-            "<i>Crypto, indices and energy are excluded — they need a paid "
-            "data plan.</i>")
+    out += i18n.t("sym_nicknames", lang)
     send(chat_id, out)
 
 
@@ -425,7 +423,7 @@ def do_setconf(chat_id: int, user_id: int, args: list[str]):
     raw = (args[0].lower().rstrip("%") if args else "")
     if raw in ("off", "0", "none"):
         users.update(user_id, min_confidence=0)
-        send(chat_id, f"🎯 <b>Confidence filter off</b>\n"
+        send(chat_id, f"{i18n.t('conf_off_title', lang)}\n"
                       f"━━━━━━━━━━━━━━━━━━━━\n"
                       f"{i18n.t('conf_cleared', lang)}")
         return
@@ -437,11 +435,11 @@ def do_setconf(chat_id: int, user_id: int, args: list[str]):
         send(chat_id, i18n.t("conf_usage", lang))
         return
     users.update(user_id, min_confidence=n)
-    band = ("🟩 relaxed — most setups pass" if n < 50 else
-            "🟨 balanced" if n < 70 else
-            "🟧 strict — expect few signals" if n < 85 else
-            "🟥 very strict — you may see nothing for days")
-    send(chat_id, f"🎯 <b>Confidence filter set</b>\n"
+    band = i18n.t("conf_band_relaxed" if n < 50 else
+                  "conf_band_balanced" if n < 70 else
+                  "conf_band_strict" if n < 85 else
+                  "conf_band_very_strict", lang)
+    send(chat_id, f"{i18n.t('conf_title', lang)}\n"
                   f"━━━━━━━━━━━━━━━━━━━━\n"
                   f"<b>{n}%</b>  {_pct_bar(n / 100)}\n"
                   f"{band}\n\n{i18n.t('conf_set', lang, n=n)}")
@@ -521,18 +519,20 @@ def do_status(chat_id: int, user_id: int):
     out += f"{s.icon} <b>{html.escape(s.name)}</b>\n"
     out += (f"🌐 {'English' if u['language'] == i18n.EN else 'Bahasa Indonesia'}"
             f"   ·   🎯 " +
-            (f"{u['min_confidence']}%+" if u["min_confidence"] else "no filter") +
+            (f"{u['min_confidence']}%+" if u["min_confidence"]
+             else i18n.t("st_no_filter", lang)) +
             "\n\n")
 
     out += f"<b>── {i18n.t('upd_live', lang)} ──</b>\n"
     out += f"📶 {i18n.t('active_signals', lang)}: <b>{len(live)}</b>\n"
     if today["trades"]:
         net = today["net"]
-        out += (f"{'🟩' if net >= 0 else '🟥'} Today: <b>{today['trades']}</b> closed"
-                f" · {today['total_r']:+.2f}R · {'+' if net >= 0 else '-'}"
-                f"${abs(net):,.2f}\n")
+        out += (f"{'🟩' if net >= 0 else '🟥'} "
+                + i18n.t("st_today", lang, n=today["trades"])
+                + f" · {today['total_r']:+.2f}R · {'+' if net >= 0 else '-'}"
+                  f"${abs(net):,.2f}\n")
     else:
-        out += "⚪ Nothing closed today yet\n"
+        out += f"⚪ {i18n.t('st_nothing_today', lang)}\n"
 
     if m.get("enabled"):
         used, cap = u["day_trades"], m["max_daily_trades"]
@@ -542,14 +542,16 @@ def do_status(chat_id: int, user_id: int):
         target = m["start_balance_usd"] * m["profit_target_pct"] / 100.0
         out += f"\n<b>── 🛡️ {i18n.t('management', lang)} ──</b>\n"
         out += f"💰 {i18n.t('balance', lang)}: <b>${m['balance_usd']:,.2f}</b>\n"
-        out += f"🔢 Trades  {used}/{cap}   {_meter(used, cap)}\n"
-        out += (f"📉 Drawdown  ${worst:,.0f}/${limit:,.0f}   "
-                f"{_meter(worst, limit)}\n")
-        out += (f"🎯 Target  ${max(gained,0):,.0f}/${target:,.0f}   "
+        out += (f"🔢 {i18n.t('st_trades', lang)}  {used}/{cap}   "
+                f"{_meter(used, cap)}\n")
+        out += (f"📉 {i18n.t('st_drawdown', lang)}  "
+                f"${worst:,.0f}/${limit:,.0f}   {_meter(worst, limit)}\n")
+        out += (f"🎯 {i18n.t('st_target', lang)}  "
+                f"${max(gained, 0):,.0f}/${target:,.0f}   "
                 f"{_meter(max(gained, 0), target, goal=True)}\n")
     else:
         out += f"\n🛡️ {i18n.t('management', lang)}: {i18n.t('off', lang)}\n"
-        out += "<i>/management on to set limits</i>\n"
+        out += i18n.t("st_set_limits", lang) + "\n"
     send(chat_id, out)
 
 
@@ -587,8 +589,10 @@ def do_history(chat_id: int, user_id: int):
     out = f"📜 <b>{i18n.t('history_title', lang)}</b>\n"
     out += "━━━━━━━━━━━━━━━━━━━━\n"
     out += f"{strip}\n"
-    out += (f"<i>{sum(1 for r in rs if r > 0)}W · {sum(1 for r in rs if r <= 0)}L"
-            f" · {sum(rs):+.2f}R over the last {len(rs)}</i>\n\n")
+    out += i18n.t("hist_summary", lang,
+                   w=sum(1 for r in rs if r > 0),
+                   l=sum(1 for r in rs if r <= 0),
+                   r=f"{sum(rs):+.2f}", n=len(rs)) + "\n\n"
     for r in rows:
         inst = I.BY_KEY.get(r.get("instrument") or "")
         name = inst.display if inst else (r.get("instrument") or "?").upper()
@@ -911,9 +915,11 @@ def do_news(chat_id: int, user_id: int):
             tag = "" if e.source == "rule" else " ·<i>yours</i>"
             name = i18n.t(f"ev_{e.key}", lang) if e.key else e.name
             note = i18n.t(f"ev_{e.key}_note", lang) if e.key else e.note
+            dkey, dfields = news.delta_parts(now, e.when_utc)
             out += (f"{dot} <b>{html.escape(name)}</b>{tag}\n"
-                    f"   {e.wib:%a %d %b · %H:%M} UTC+7  "
-                    f"<i>({news._delta(now, e.when_utc)})</i>\n")
+                    f"   {i18n.date_short(e.wib, lang)} · "
+                    f"{e.wib:%H:%M} UTC+7  "
+                    f"<i>({i18n.t(dkey, lang, **dfields)})</i>\n")
             if note:
                 out += f"   <i>{html.escape(note)}</i>\n"
         out += "\n"
@@ -938,8 +944,10 @@ def do_subscription(chat_id: int, user_id: int):
         left = subscriptions.days_left(user_id)
         if until and left > 0:
             out += i18n.t("sub_active", lang,
-                          until=until.astimezone(news.WIB).strftime(
-                              "%d %b %Y, %H:%M") + " UTC+7",
+                          until=i18n.date_long(
+                              until.astimezone(news.WIB), lang)
+                          + until.astimezone(news.WIB).strftime(", %H:%M")
+                          + " UTC+7",
                           days=f"{left:.1f}") + "\n"
             if left <= 5:
                 out += "\n" + i18n.t("sub_soon", lang, days=f"{left:.1f}") + "\n"
@@ -978,7 +986,8 @@ def do_grant(chat_id: int, user_id: int, args: list[str]):
     rec = subscriptions.grant(target, days, plan, granted_by=user_id)
     until = datetime.fromisoformat(rec["until"]).astimezone(news.WIB)
     send(chat_id, i18n.t("sub_granted", lang, days=f"{days:g}", uid=target,
-                         until=until.strftime("%d %b %Y, %H:%M") + " UTC+7"))
+                         until=i18n.date_long(until, lang)
+                         + until.strftime(", %H:%M") + " UTC+7"))
 
 
 def do_revoke(chat_id: int, user_id: int, args: list[str]):
@@ -1008,7 +1017,7 @@ def do_subs(chat_id: int, user_id: int):
     out += f"<b>{live}</b> active · <b>{len(rows) - live}</b> lapsed\n\n"
     for r in rows[:40]:
         dot = "🟢" if r["active"] else "⚪"
-        when = r["until"].astimezone(news.WIB).strftime("%d %b %Y") \
+        when = i18n.date_long(r["until"].astimezone(news.WIB), lang) \
             if r["until"] else "-"
         out += (f"{dot} <code>{r['user_id']}</code> · {html.escape(r['plan'])}\n"
                 f"   {when}"
@@ -1108,7 +1117,7 @@ def handle_message(msg: dict):
     elif cmd == "/subs":
         do_subs(chat_id, user_id)
     elif cmd == "/symbols":
-        do_symbols(chat_id)
+        do_symbols(chat_id, lang)
     else:
         send(chat_id, i18n.t("unknown_command", lang))
 

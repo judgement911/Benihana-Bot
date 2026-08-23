@@ -76,6 +76,32 @@ def tg(method: str, **payload):
         return None
 
 
+def _meter(used: float, total: float, width: int = 10,
+           goal: bool = False) -> str:
+    """A bar built from block characters. Telegram has no progress widget, and
+    a number beside a filled bar is read at a glance where a bare number is
+    read only if you stop to think about it.
+
+    `goal` flips what a full bar means. Filling a drawdown limit is bad and
+    filling a profit target is good, so the same bar cannot use the same
+    colour for both without telling the user the opposite of the truth.
+    """
+    if total <= 0:
+        return ""
+    frac = max(0.0, min(1.0, used / total))
+    filled = int(round(frac * width))
+    if goal:
+        dot = "🏁" if frac >= 1.0 else "🟢" if frac >= 0.6 else "⚪"
+    else:
+        dot = "🔴" if frac >= 0.85 else "🟠" if frac >= 0.6 else "🟢"
+    return "▓" * filled + "░" * (width - filled) + " " + dot
+
+
+def _pct_bar(frac: float, width: int = 10) -> str:
+    filled = int(round(max(0.0, min(1.0, frac)) * width))
+    return "▓" * filled + "░" * (width - filled)
+
+
 def lang_of(user_id: int) -> str:
     return users.get(user_id).get("language", i18n.EN)
 
@@ -345,17 +371,28 @@ def do_scan(chat_id: int, user_id: int, mode: str, keys: list = None,
 #  /symbols — what it can trade
 # --------------------------------------------------------------------------- #
 def do_symbols(chat_id: int):
-    out = "<b>Tradeable universe</b>\n"
+    """Grouped, with what each one costs to trade — because the spread is the
+    number that decides whether a pair is worth taking at all."""
+    ICON = {"Forex": "💱", "Metals": "🥇"}
+    out = "🗺 <b>TRADABLE MARKETS</b>\n"
+    out += "━━━━━━━━━━━━━━━━━━━━\n\n"
     for label, items in I.grouped().items():
         if not items:
             continue
-        out += f"\n<b>{label}</b>\n"
-        out += "<code>" + " ".join(i.display for i in items) + "</code>\n"
-    out += ("\n<i>Type any of them, or a nickname: gold, cable, nas100, "
-            "aussie. Free data plans usually cover FX and metals; indices "
-            "and energy often need a paid plan — "
-            "<code>python check_universe.py</code> tells you which.</i>")
+        out += f"{ICON.get(label, '•')} <b>{label}</b>  <i>({len(items)})</i>\n"
+        names = [i.display for i in items]
+        for n in range(0, len(names), 4):
+            out += "   " + " · ".join(names[n:n + 4]) + "\n"
+        out += "\n"
+    g = I.GOLD
+    out += ("<b>── cost to trade ──</b>\n"
+            f"🥇 {g.display}  spread {g.spread:g} pts\n"
+            f"💱 majors  ~{I.BY_KEY['eurusd'].spread / I.BY_KEY['eurusd'].pip:.1f} pips\n\n")
+    out += ("<i>Nicknames work: gold, cable, guppy, kiwi, aussie, fiber.</i>\n"
+            "<i>Crypto, indices and energy are excluded — they need a paid "
+            "data plan.</i>")
     send(chat_id, out)
+
 
 
 # --------------------------------------------------------------------------- #
@@ -378,7 +415,9 @@ def do_setconf(chat_id: int, user_id: int, args: list[str]):
     raw = (args[0].lower().rstrip("%") if args else "")
     if raw in ("off", "0", "none"):
         users.update(user_id, min_confidence=0)
-        send(chat_id, i18n.t("conf_cleared", lang))
+        send(chat_id, f"🎯 <b>Confidence filter off</b>\n"
+                      f"━━━━━━━━━━━━━━━━━━━━\n"
+                      f"{i18n.t('conf_cleared', lang)}")
         return
     try:
         n = int(raw)
@@ -388,7 +427,14 @@ def do_setconf(chat_id: int, user_id: int, args: list[str]):
         send(chat_id, i18n.t("conf_usage", lang))
         return
     users.update(user_id, min_confidence=n)
-    send(chat_id, i18n.t("conf_set", lang, n=n))
+    band = ("🟩 relaxed — most setups pass" if n < 50 else
+            "🟨 balanced" if n < 70 else
+            "🟧 strict — expect few signals" if n < 85 else
+            "🟥 very strict — you may see nothing for days")
+    send(chat_id, f"🎯 <b>Confidence filter set</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  f"<b>{n}%</b>  {_pct_bar(n / 100)}\n"
+                  f"{band}\n\n{i18n.t('conf_set', lang, n=n)}")
 
 
 def do_strategy(chat_id: int, user_id: int, args: list[str]):
@@ -417,9 +463,13 @@ def do_strategy(chat_id: int, user_id: int, args: list[str]):
     out = f"⚔️ <b>{i18n.t('strategies_title', lang)}</b>\n\n"
     for n, key in enumerate(strategies.ORDER, start=1):
         s = strategies.REGISTRY[key]
-        mark = " ✅" if key == u["strategy"] else ""
+        mark = "  ✅" if key == u["strategy"] else ""
         blurb = s.blurb_id if lang == i18n.ID else s.blurb_en
-        out += f"<b>{n}. {html.escape(s.name)}</b>{mark}\n{html.escape(blurb)}\n\n"
+        best = s.best_id if lang == i18n.ID else s.best_en
+        out += f"{s.icon} <b>{n}. {html.escape(s.name)}</b>{mark}\n"
+        if best:
+            out += f"   <i>{html.escape(best)}</i>\n"
+        out += f"   {html.escape(blurb)}\n\n"
     out += i18n.t("strategy_howto", lang)
     send(chat_id, out)
 
@@ -453,16 +503,44 @@ def do_status(chat_id: int, user_id: int):
     u = users.get(user_id)
     m = u.get("management") or {}
     live = journal.active_signals(user_id=user_id)
-    lines = [f"📡 <b>{i18n.t('status_title', lang)}</b>", ""]
-    lines.append(f"{i18n.t('active_signals', lang)}: <b>{len(live)}</b>")
-    lines.append(f"{i18n.t('trades_today', lang)}: <b>{u['day_trades']}</b>"
-                 + (f" / {m['max_daily_trades']}" if m.get("enabled") else ""))
+    s = strategies.REGISTRY.get(u["strategy"])
+    today = journal.period_stats("daily", user_id)
+
+    out = "📡 <b>BENIHANA STATUS</b>\n"
+    out += "━━━━━━━━━━━━━━━━━━━━\n\n"
+    out += f"{s.icon} <b>{html.escape(s.name)}</b>\n"
+    out += (f"🌐 {'English' if u['language'] == i18n.EN else 'Bahasa Indonesia'}"
+            f"   ·   🎯 " +
+            (f"{u['min_confidence']}%+" if u["min_confidence"] else "no filter") +
+            "\n\n")
+
+    out += f"<b>── {i18n.t('upd_live', lang)} ──</b>\n"
+    out += f"📶 {i18n.t('active_signals', lang)}: <b>{len(live)}</b>\n"
+    if today["trades"]:
+        net = today["net"]
+        out += (f"{'🟩' if net >= 0 else '🟥'} Today: <b>{today['trades']}</b> closed"
+                f" · {today['total_r']:+.2f}R · {'+' if net >= 0 else '-'}"
+                f"${abs(net):,.2f}\n")
+    else:
+        out += "⚪ Nothing closed today yet\n"
+
     if m.get("enabled"):
-        lines.append("")
-        lines.append(f"🛡️ {i18n.t('balance', lang)}: ${m['balance_usd']:,.2f}")
-        lines.append(f"📉 {i18n.t('day_pl', lang)}: {u['day_pl_usd']:+,.2f}")
-        lines.append(f"🎯 {i18n.t('profit_target', lang)}: +{m['profit_target_pct']}%")
-    send(chat_id, "\n".join(lines))
+        used, cap = u["day_trades"], m["max_daily_trades"]
+        limit = abs(m["balance_usd"] * m["daily_dd_pct"] / 100.0)
+        worst = abs(users.max_drawdown_today(u))
+        gained = m["balance_usd"] - m["start_balance_usd"]
+        target = m["start_balance_usd"] * m["profit_target_pct"] / 100.0
+        out += f"\n<b>── 🛡️ {i18n.t('management', lang)} ──</b>\n"
+        out += f"💰 {i18n.t('balance', lang)}: <b>${m['balance_usd']:,.2f}</b>\n"
+        out += f"🔢 Trades  {used}/{cap}   {_meter(used, cap)}\n"
+        out += (f"📉 Drawdown  ${worst:,.0f}/${limit:,.0f}   "
+                f"{_meter(worst, limit)}\n")
+        out += (f"🎯 Target  ${max(gained,0):,.0f}/${target:,.0f}   "
+                f"{_meter(max(gained, 0), target, goal=True)}\n")
+    else:
+        out += f"\n🛡️ {i18n.t('management', lang)}: {i18n.t('off', lang)}\n"
+        out += "<i>/management on to set limits</i>\n"
+    send(chat_id, out)
 
 
 def do_signals_list(chat_id: int, user_id: int):
@@ -489,16 +567,27 @@ def do_history(chat_id: int, user_id: int):
     rows = [r for r in journal._load()
             if r.get("r") is not None and r.get("user_id") in (None, user_id)]
     if not rows:
-        send(chat_id, i18n.t("no_history", lang))
+        send(chat_id, f"📜 <b>{i18n.t('history_title', lang)}</b>\n\n"
+                      f"{i18n.t('no_history', lang)}")
         return
-    rows = rows[-10:][::-1]
-    out = f"📜 <b>{i18n.t('history_title', lang)}</b>\n\n"
+    rows = rows[-12:][::-1]
+    rs = [float(r["r"]) for r in rows]
+    strip = "".join("🟩" if r > 0 else "🟥" for r in rs)
+
+    out = f"📜 <b>{i18n.t('history_title', lang)}</b>\n"
+    out += "━━━━━━━━━━━━━━━━━━━━\n"
+    out += f"{strip}\n"
+    out += (f"<i>{sum(1 for r in rs if r > 0)}W · {sum(1 for r in rs if r <= 0)}L"
+            f" · {sum(rs):+.2f}R over the last {len(rs)}</i>\n\n")
     for r in rows:
         inst = I.BY_KEY.get(r.get("instrument") or "")
         name = inst.display if inst else (r.get("instrument") or "?").upper()
-        icon = "✅" if float(r["r"]) > 0 else "❌"
-        out += (f"{icon} <b>{name}</b> {r['mode'].upper()} · "
-                f"{float(r['r']):+.2f}R\n")
+        rr = float(r["r"])
+        st = strategies.REGISTRY.get(r.get("strategy") or "")
+        when = str(r.get("resolved_ts") or r.get("ts") or "")[:10]
+        out += (f"{'🟩' if rr > 0 else '🟥'} <b>{name}</b> {r['mode'].upper()}"
+                f" · <b>{rr:+.2f}R</b>\n"
+                f"   {st.icon if st else '·'} {st.name if st else ''} · {when}\n")
     send(chat_id, out)
 
 
@@ -555,8 +644,11 @@ def do_management(chat_id: int, user_id: int, args: list[str]):
     send(chat_id, i18n.t("mgmt_on", lang,
                          balance=money.fmt(bal_value, bal_ccy),
                          risk=f"{risk_pct:g}", per_trade=money.fmt(per_trade, "USD"),
-                         dd=f"{dd_pct:g}", trades=max_trades,
-                         target=f"{target_pct:g}"))
+                         dd=f"{dd_pct:g}",
+                         dd_cash=money.fmt(balance_usd * dd_pct / 100.0, "USD"),
+                         trades=max_trades, target=f"{target_pct:g}",
+                         target_cash=money.fmt(balance_usd * target_pct / 100.0,
+                                               "USD")))
 
 
 def management_gate(chat_id: int, user_id: int) -> bool:
@@ -592,6 +684,9 @@ def check_profit_target(user_id: int) -> str | None:
     gained = m["balance_usd"] - m["start_balance_usd"]
     if gained < target:
         return None
+    # Target reached: the envelope is deleted, not disabled. Re-enabling
+    # would need /management on with fresh numbers, which is the point —
+    # the old balance is out of date the moment the target is hit.
     users.management_off(user_id)
     return i18n.t("mgmt_target_hit", lang_of(user_id),
                   target=f"{m['profit_target_pct']:g}",
@@ -683,6 +778,95 @@ def help_text(lang: str = i18n.EN) -> str:
     )
 
 
+# --------------------------------------------------------------------------- #
+#  /update and /swingupdate — where the live signals stand
+# --------------------------------------------------------------------------- #
+STATE_ICON = {"waiting": "⏳", "active": "🟢", "breakeven": "🛡️",
+              "tp1": "🤡", "tp2": "🥵", "tp3": "💀",
+              "stopped": "❌", "completed": "✅",
+              "expired": "⌛", "cancelled": "🚫"}
+STATE_WORD = {"waiting": "waiting to fill", "active": "running",
+              "breakeven": "risk-free, TP1 banked", "stopped": "stopped out",
+              "completed": "closed", "expired": "expired",
+              "cancelled": "cancelled"}
+
+
+def _signal_line(r, lang) -> str:
+    inst = I.BY_KEY.get(r.get("instrument") or "")
+    name = inst.display if inst else str(r.get("instrument", "?")).upper()
+    st = r.get("state") or "waiting"
+    icon = STATE_ICON.get(st, "•")
+    side = "BUY" if r.get("direction", 0) > 0 else "SELL"
+    hit = r.get("tps_hit") or []
+    strat = strategies.REGISTRY.get(r.get("strategy") or "")
+    sname = f" · {strat.icon} {strat.name}" if strat else ""
+
+    out = f"{icon} <b>{html.escape(name)}</b> {side} · {r.get('mode','').upper()}{sname}\n"
+    out += f"   {STATE_WORD.get(st, st)}"
+    if hit:
+        out += " · " + " ".join(STATE_ICON.get(f"tp{n}", "🎯") for n in hit) + " hit"
+    out += "\n"
+
+    fmt = inst.fmt if inst else (lambda v: f"{v}")
+    out += f"   📍 {fmt(r['entry'])}  🛑 {fmt(r.get('stop_moved') or r['stop'])}\n"
+    tps = r.get("tps") or []
+    nxt = [n for n in range(1, len(tps) + 1) if n not in hit]
+    if nxt and st not in journal.FINAL_STATES:
+        n = nxt[0]
+        out += f"   next {STATE_ICON.get(f'tp{n}','🎯')} TP{n} {fmt(tps[n-1])}\n"
+    if r.get("r") is not None:
+        rr = float(r["r"])
+        out += f"   {'🟩' if rr > 0 else '🟥'} <b>{rr:+.2f}R</b>\n"
+    return out
+
+
+def do_update(chat_id: int, user_id: int, swing: bool):
+    """Swing runs for days; scalps resolve in minutes. Mixing them in one
+    list buries the swing trade under this morning's noise, so they get
+    separate commands."""
+    lang = lang_of(user_id)
+    rows = journal.lifecycle_view(
+        user_id, modes=["swing"] if swing else None,
+        exclude_modes=None if swing else ["swing"])
+    title = i18n.t("upd_swing_title" if swing else "upd_title", lang)
+    head = f"{'🐢' if swing else '📡'} <b>{title}</b>\n\n"
+
+    if not rows:
+        send(chat_id, head + i18n.t("upd_none_swing" if swing else "upd_none", lang))
+        return
+
+    live = [r for r in rows if r.get("state") not in journal.FINAL_STATES]
+    done = [r for r in rows if r.get("state") in journal.FINAL_STATES][:6]
+
+    out = head
+    if live:
+        out += f"<b>── {i18n.t('upd_live', lang)} ({len(live)}) ──</b>\n\n"
+        out += "\n".join(_signal_line(r, lang) for r in live) + "\n"
+    if done:
+        out += f"<b>── {i18n.t('upd_done', lang)} ──</b>\n\n"
+        out += "\n".join(_signal_line(r, lang) for r in done)
+    out += f"\n<i>{i18n.t('upd_hint', lang)}</i>"
+    send(chat_id, out)
+
+
+def do_resetdata(chat_id: int, user_id: int, args):
+    lang = lang_of(user_id)
+    confirmed = args and args[0].lower() in ("yes", "confirm", "ya")
+    if not confirmed:
+        n = len(journal.lifecycle_view(user_id))
+        if not n:
+            send(chat_id, i18n.t("reset_empty", lang))
+            return
+        send(chat_id, i18n.t("reset_confirm", lang))
+        return
+    res = journal.wipe(user_id)
+    users.update(user_id, day_trades=0, day_pl_usd=0.0, day_peak_usd=0.0)
+    if not res["removed"]:
+        send(chat_id, i18n.t("reset_empty", lang))
+        return
+    send(chat_id, i18n.t("reset_done", lang, n=res["removed"]))
+
+
 def handle_message(msg: dict):
     chat_id = msg["chat"]["id"]
     user_id = msg.get("from", {}).get("id", 0)
@@ -727,6 +911,12 @@ def handle_message(msg: dict):
         do_period(chat_id, user_id, cmd.lstrip("/"))
     elif cmd == "/management":
         do_management(chat_id, user_id, args)
+    elif cmd == "/update":
+        do_update(chat_id, user_id, swing=False)
+    elif cmd == "/swingupdate":
+        do_update(chat_id, user_id, swing=True)
+    elif cmd == "/resetdata":
+        do_resetdata(chat_id, user_id, args)
     elif cmd == "/cancel":
         sid = args[0] if args else ""
         send(chat_id, i18n.t("cancelled_ok" if journal.cancel(sid)

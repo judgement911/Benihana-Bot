@@ -202,6 +202,52 @@ S: dict[str, dict[str, str]] = {
         ID: "Pilih salah satu, misalnya <code>/strategy 1</code>",
     },
 
+    # ------------------------------------------------------------ /update
+    "upd_title": {EN: "SIGNAL TRACKER", ID: "PELACAK SINYAL"},
+    "upd_swing_title": {EN: "SWING TRACKER", ID: "PELACAK SWING"},
+    "upd_none": {
+        EN: "No signals being tracked. Ask for one with /signal.",
+        ID: "Belum ada sinyal yang dilacak. Minta satu dengan /signal.",
+    },
+    "upd_none_swing": {
+        EN: "No swing signals running. /signal xauusd swing starts one.",
+        ID: "Belum ada sinyal swing berjalan. /signal xauusd swing untuk memulai.",
+    },
+    "upd_live": {EN: "Live", ID: "Berjalan"},
+    "upd_done": {EN: "Finished", ID: "Selesai"},
+    "upd_hint": {
+        EN: "Updates arrive when the tracker runs. On a free host that is "
+            "once a day — see /help.",
+        ID: "Pembaruan masuk saat pelacak berjalan. Di host gratis sekali "
+            "sehari — lihat /help.",
+    },
+
+    # ---------------------------------------------------------- /resetdata
+    "reset_confirm": {
+        EN: ("🗑 <b>Erase all your records?</b>\n\n"
+             "This wipes every signal behind /stats, /daily, /weekly, "
+             "/monthly, /history and /status. It cannot be undone.\n\n"
+             "Send <code>/resetdata yes</code> to confirm."),
+        ID: ("🗑 <b>Hapus semua catatan Anda?</b>\n\n"
+             "Ini menghapus semua sinyal di balik /stats, /daily, /weekly, "
+             "/monthly, /history dan /status. Tidak bisa dibatalkan.\n\n"
+             "Kirim <code>/resetdata yes</code> untuk konfirmasi."),
+    },
+    "reset_done": {
+        EN: ("🗑 <b>Records erased</b>\n\n{n} signals removed. /stats, "
+             "/daily, /weekly, /monthly, /history and /status all start "
+             "from zero.\n\n<i>Risk management settings were left alone — "
+             "use /management off to clear those.</i>"),
+        ID: ("🗑 <b>Catatan dihapus</b>\n\n{n} sinyal dihapus. /stats, "
+             "/daily, /weekly, /monthly, /history dan /status mulai dari "
+             "nol.\n\n<i>Pengaturan manajemen risiko tidak diubah — "
+             "gunakan /management off untuk menghapusnya.</i>"),
+    },
+    "reset_empty": {
+        EN: "Nothing to erase — no signals recorded yet.",
+        ID: "Tidak ada yang dihapus — belum ada sinyal tercatat.",
+    },
+
     # ------------------------------------------------------- management (§17)
     "mgmt_form": {
         EN: ("🛡️ <b>Risk and money management</b>\n\n"
@@ -229,24 +275,29 @@ S: dict[str, dict[str, str]] = {
         EN: ("🛡️ <b>Risk management is on</b>\n\n"
              "💰 Balance: {balance}\n"
              "⚖️ Risk per trade: {risk}% = {per_trade}\n"
-             "📉 Daily drawdown limit: {dd}%\n"
+             "📉 Daily drawdown limit: {dd}% ({dd_cash})\n"
              "🔢 Max daily trades: {trades}\n"
-             "🎯 Profit target: +{target}%\n\n"
+             "🎯 Profit target: +{target}% ({target_cash})\n\n"
              "<i>Signals will be sized from this, and will stop when a limit "
              "is reached.</i>"),
         ID: ("🛡️ <b>Manajemen risiko aktif</b>\n\n"
              "💰 Saldo: {balance}\n"
              "⚖️ Risiko per transaksi: {risk}% = {per_trade}\n"
-             "📉 Batas drawdown harian: {dd}%\n"
+             "📉 Batas drawdown harian: {dd}% ({dd_cash})\n"
              "🔢 Maksimal transaksi harian: {trades}\n"
-             "🎯 Target profit: +{target}%\n\n"
+             "🎯 Target profit: +{target}% ({target_cash})\n\n"
              "<i>Sinyal akan dihitung dari ini, dan berhenti saat batas "
              "tercapai.</i>"),
     },
     "mgmt_off": {
-        EN: "<b>Risk and money management has been turned off.</b>",
-        ID: "<b>Manajemen risiko dan modal telah dimatikan.</b>",
+        EN: ("🛡️ <b>Risk and money management is off</b>\n\n"
+             "Your balance, limits and daily counters have been cleared.\n\n"
+             "<i>Set it up again with</i> <code>/management on ...</code>"),
+        ID: ("🛡️ <b>Manajemen risiko dan modal nonaktif</b>\n\n"
+             "Saldo, batas, dan penghitung harian Anda telah dihapus.\n\n"
+             "<i>Aktifkan lagi dengan</i> <code>/management on ...</code>"),
     },
+    "max_dd_today": {EN: "Worst drawdown today", ID: "Drawdown terburuk hari ini"},
     "mgmt_max_trades": {
         EN: ("🛡️ <b>Risk Management</b>\n\n"
              "Maximum daily trades reached: {n}/{max}.\n\n"

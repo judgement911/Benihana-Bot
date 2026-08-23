@@ -768,6 +768,130 @@ def check_payoff_agreement() -> bool:
     return ok
 
 
+
+def _inspect_bodies(bodies, label, failures) -> bool:
+    """Every reply must survive Telegram: short enough, and valid HTML."""
+    import html as _html
+    import re as _re
+    ok = True
+    for body in bodies:
+        if len(body) > 4096:
+            failures.append(f"{label} replied {len(body)} chars (max 4096)")
+            ok = False
+        # Telegram rejects the whole message on a malformed tag, so an
+        # unescaped stray '<' is a delivery failure, not a cosmetic one.
+        stripped = _re.sub(r"</?(b|i|u|s|code|pre|a|tg-spoiler|blockquote)"
+                           r"(\s[^>]*)?>", "", body)
+        if "<" in stripped or ">" in stripped:
+            failures.append(f"{label} has raw angle brackets")
+            ok = False
+        if _html.unescape(body).strip() == "":
+            failures.append(f"{label} replied with only markup")
+            ok = False
+    return ok
+
+
+def check_commands() -> bool:
+    """Drive every offline command through the real dispatcher.
+
+    This exists because a handler can be deleted, renamed or left referencing
+    a helper that was never written, and nothing else in this suite would
+    notice — the bot would import fine and then fail in the user's chat. So
+    the assertion is deliberately end-to-end: build a message, hand it to
+    handle_message, and demand a well-formed reply.
+    """
+    import inspect as _inspect
+    import re as _re
+    import flask_app as F
+    import journal as J
+    import users as U
+
+    src_of_dispatch = _inspect.getsource(F.handle_message)
+    UID = 90001
+    real_send, real_allowed = F.send, F.allowed
+    captured: list[str] = []
+    F.send = lambda cid, txt, **k: captured.append(txt)
+    F.allowed = lambda uid: True
+
+    # Commands that need the network (a quote, a candle history, an API key)
+    # are out of scope here; this checks wiring and rendering, not data.
+    NETWORKED = {"/signal", "/scan", "/backtest", "/calibration"}
+    cmds = sorted({m.group(1) for m in
+                   _re.finditer(r'cmd (?:==|in) \(?"(/[a-z]+)"', src_of_dispatch)}
+                  - NETWORKED)
+    extra = ["/start", "/help", "/menu", "/language", "/language bahasa",
+             "/language english", "/setconf 70", "/setconf off",
+             "/strategy", "/strategy shogun", "/strategy auto",
+             "/daily", "/weekly", "/monthly", "/update", "/swingupdate",
+             "/management", "/resetdata", "/notacommand"]
+
+    # Every command runs twice, once with risk management off and once with
+    # it on. Half of /status only exists in the second state, so a fixture
+    # that never enables management silently skips the code it is meant to
+    # cover — a renamed helper in that branch passed this check until the
+    # second profile was added.
+    PROFILES = {
+        "management off": dict(
+            language="en", strategy="crimson", min_confidence=0,
+            management=None, day_trades=0, day_pl_usd=0.0,
+            day_peak_usd=0.0, day_trough_usd=0.0),
+        "management on": dict(
+            language="id", strategy="auto", min_confidence=70,
+            management={"enabled": True, "balance_usd": 5240.0,
+                        "start_balance_usd": 5000.0, "risk_pct": 1.0,
+                        "daily_dd_pct": 3.0, "profit_target_pct": 5.0,
+                        "max_daily_trades": 6},
+            day_trades=5, day_pl_usd=240.0,
+            day_peak_usd=300.0, day_trough_usd=-140.0),
+    }
+
+    ok, failures = True, []
+    for profile, settings in PROFILES.items():
+        U.update(UID, **settings)
+        for text in [c for c in cmds] + extra:
+            captured.clear()
+            try:
+                F.handle_message({"chat": {"id": 1}, "from": {"id": UID},
+                                  "text": text})
+            except Exception as exc:                   # noqa: BLE001
+                failures.append(f"[{profile}] {text} raised "
+                                f"{type(exc).__name__}: {exc}")
+                ok = False
+                continue
+            if not captured:
+                failures.append(f"[{profile}] {text} produced no reply")
+                ok = False
+                continue
+            ok &= _inspect_bodies(captured, f"[{profile}] {text}", failures)
+
+    U.update(UID, **PROFILES["management off"])
+
+    # An unknown command must still answer, and known ones must not fall
+    # through to that same answer.
+    captured.clear()
+    F.handle_message({"chat": {"id": 1}, "from": {"id": UID},
+                      "text": "/notacommand"})
+    unknown = captured[0] if captured else ""
+    for text in ["/status", "/symbols", "/history", "/setconf 70", "/update"]:
+        captured.clear()
+        F.handle_message({"chat": {"id": 1}, "from": {"id": UID}, "text": text})
+        if captured and captured[0] == unknown:
+            failures.append(f"{text} fell through to the unknown-command reply")
+            ok = False
+
+    F.send, F.allowed = real_send, real_allowed
+    J.wipe(UID)
+    U.update(UID, management=None)
+
+    if ok:
+        print(f"  commands: {(len(cmds) + len(extra)) * 2} dispatched "
+              f"across 2 account states, all replied and render clean")
+    else:
+        for f in failures[:8]:
+            print(f"  x {f}")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -805,4 +929,7 @@ if __name__ == "__main__":
 
     print("\nSignal journal:")
     ok &= check_journal()
+
+    print("\nCommands:")
+    ok &= check_commands()
     raise SystemExit(0 if ok else 1)

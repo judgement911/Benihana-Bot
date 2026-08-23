@@ -27,6 +27,7 @@ an edge cannot be read off a dozen trades however good the numbers look.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures as cf
 import contextlib
 import glob
 import io
@@ -37,6 +38,7 @@ import sys
 import pandas as pd
 
 import config as C
+import instruments as I
 from backtest import run as backtest_run
 from bakeoff import MIN_TRADES, _metrics, _score
 from strategies import ORDER, REGISTRY
@@ -60,55 +62,124 @@ def load(path: str) -> pd.DataFrame:
     return df[need].dropna()
 
 
-def sweep(df: pd.DataFrame, mode: str, log=print) -> list[dict]:
+MIN_SIDE_TRADES = 10       # below this, a side's expectancy is noise
+
+
+def _direction(trades: list[dict]) -> dict:
+    """Split a result by trade direction.
+
+    Every finding in this project has turned on this. A strategy that only
+    ever went long in a rising market looks identical to one with an edge
+    until you separate the two, and four of the best-looking results here
+    were exactly that.
+
+    The verdict needs a minimum count PER SIDE. Calling something two-sided
+    off two short trades is how a one-sided result sneaks through wearing
+    the label that was supposed to catch it.
+    """
+    L = [t["r"] for t in trades if t["dir"] > 0]
+    S = [t["r"] for t in trades if t["dir"] < 0]
+    eL = sum(L) / len(L) if L else None
+    eS = sum(S) / len(S) if S else None
+    if not S:
+        verdict = "no shorts"
+    elif len(L) < MIN_SIDE_TRADES or len(S) < MIN_SIDE_TRADES:
+        verdict = "one side thin"
+    elif eL > 0 and eS > 0:
+        verdict = "YES"
+    else:
+        verdict = "no"
+    return {"nL": len(L), "nS": len(S), "eL": eL, "eS": eS, "two_sided": verdict}
+
+
+def _one(job: tuple) -> dict:
+    """One backtest. Module-level and self-contained so it can be sent to a
+    worker process — the pool passes keys, not closures."""
+    path, mode, pair, key, rr_label = job
+    try:
+        df = load(path)
+        inst = I.find(pair)
+        if inst is None:
+            raise ValueError(f"unknown instrument {pair!r} — refusing to guess")
+        with contextlib.redirect_stdout(io.StringIO()):
+            stats, _ = backtest_run(df, mode, strategy=REGISTRY[key].evaluate,
+                                    tp_multiples=RR_SETS[rr_label],
+                                    instrument=inst)
+        tl = stats.get("trade_log") or []
+        m = _metrics(tl)
+        m.update(_direction(tl))
+    except Exception as exc:                        # noqa: BLE001
+        m = {"trades": 0, "error": f"{type(exc).__name__}: {exc}"}
+    m.update(strategy=key, name=REGISTRY[key].name, mode=mode, rr=rr_label,
+             pair=pair)
+    m["score"] = _score(m)
+    return m
+
+
+def sweep_all(jobs: list[tuple], workers: int, log=print) -> list[dict]:
+    """Run every backtest, in parallel when there are cores to spare.
+
+    Each run is independent and CPU-bound, so a process pool is close to a
+    linear win. One core is left free by default: saturating every core on a
+    shared machine makes the whole thing slower, not faster.
+    """
     rows = []
-    for key in ORDER:
-        for rr_label, tps in RR_SETS.items():
-            try:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    stats, _ = backtest_run(df, mode, strategy=REGISTRY[key].evaluate,
-                                            tp_multiples=tps)
-                m = _metrics(stats.get("trade_log") or [])
-            except Exception as exc:                # noqa: BLE001
-                m = {"trades": 0, "error": f"{type(exc).__name__}: {exc}"}
-            m.update(strategy=key, name=REGISTRY[key].name, mode=mode, rr=rr_label)
-            m["score"] = _score(m)
+    if workers <= 1:
+        for n, job in enumerate(jobs, start=1):
+            m = _one(job)
+            log(f"    [{n}/{len(jobs)}] {m['pair']:<7}{m['name']:<15}"
+                f"{m['mode']:<9}{m['rr']}  {m.get('trades', 0):>4} trades")
             rows.append(m)
-            log(f"    {REGISTRY[key].name:<15} {mode:<9} {rr_label}  "
-                f"{m.get('trades', 0):>4} trades")
+        return rows
+
+    with cf.ProcessPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_one, j): j for j in jobs}
+        for n, fut in enumerate(cf.as_completed(futures), start=1):
+            m = fut.result()
+            log(f"    [{n}/{len(jobs)}] {m['pair']:<7}{m['name']:<15}"
+                f"{m['mode']:<9}{m['rr']}  {m.get('trades', 0):>4} trades")
+            rows.append(m)
     return rows
 
 
 def table(rows: list[dict]) -> str:
-    out = [f"{'strategy':<16}{'mode':<10}{'R:R':<6}{'n':>5}{'win':>7}"
-           f"{'PF':>7}{'exp R':>8}{'net R':>8}{'maxDD':>8}  ok"]
-    out.append("-" * 82)
+    out = [f"{'pair':<8}{'strategy':<16}{'mode':<10}{'R:R':<6}{'n':>5}{'win':>6}"
+           f"{'PF':>7}{'exp R':>8}{'maxDD':>8}{'long':>6}{'short':>6}  two-sided"]
+    out.append("-" * 100)
     for m in sorted(rows, key=lambda r: -r.get("score", float("-inf"))):
         if not m.get("trades"):
-            out.append(f"{m['name']:<16}{m['mode']:<10}{m['rr']:<6}{'0':>5}   "
-                       + str(m.get("error", "no trades"))[:40])
+            out.append(f"{m.get('pair',''):<8}{m['name']:<16}{m['mode']:<10}"
+                       f"{m['rr']:<6}{'0':>5}   "
+                       + str(m.get("error", "no trades"))[:36])
             continue
         pf = "inf" if m["profit_factor"] == float("inf") else f"{m['profit_factor']:.2f}"
-        out.append(f"{m['name']:<16}{m['mode']:<10}{m['rr']:<6}{m['trades']:>5}"
-                   f"{m['win_rate']:>6.0%}{pf:>7}{m['expectancy']:>+8.2f}"
-                   f"{m['net_r']:>+8.1f}{m['max_dd_r']:>+8.1f}  "
-                   + ("yes" if m["trades"] >= MIN_TRADES else "few"))
+        out.append(f"{m.get('pair',''):<8}{m['name']:<16}{m['mode']:<10}"
+                   f"{m['rr']:<6}{m['trades']:>5}{m['win_rate']:>5.0%}{pf:>7}"
+                   f"{m['expectancy']:>+8.2f}{m['max_dd_r']:>+8.1f}"
+                   f"{m.get('nL', 0):>6}{m.get('nS', 0):>6}"
+                   f"  {m.get('two_sided', '?')}")
     return "\n".join(out)
 
 
 def verdict(rows: list[dict]) -> str:
-    rankable = [r for r in rows if r.get("trades", 0) >= MIN_TRADES]
+    # A one-sided result in a trending sample measures the trend, so it is
+    # reported in the table but never ranked or recommended.
+    rankable = [r for r in rows if r.get("trades", 0) >= MIN_TRADES
+                and r.get("two_sided") == "YES"]
     if not rankable:
-        return ("\nNOTHING IS RANKABLE. Every combination produced fewer than "
-                f"{MIN_TRADES} trades, which cannot show an edge. More history "
-                "is the only fix — this is an absence of evidence, not a result.")
+        return ("\nNOTHING IS RANKABLE. No combination both cleared "
+                f"{MIN_TRADES} trades and made money in both directions. "
+                "That is the finding: on this sample nothing here is "
+                "distinguishable from riding the prevailing trend.")
     out = ["", "Ranked on expectancy after costs, under the partial-exit plan",
-           "the bot actually trades. Combinations under "
-           f"{MIN_TRADES} trades are excluded.", ""]
+           "the bot actually trades. Excluded: fewer than "
+           f"{MIN_TRADES} trades, or not profitable on BOTH sides with at",
+           f"least {MIN_SIDE_TRADES} trades each — a strategy that only went",
+           "long in a rising market has measured the market, not itself.", ""]
     best = sorted(rankable, key=lambda r: -r["score"])[:5]
     for n, m in enumerate(best, start=1):
-        out.append(f"  {n}. {m['name']} · {m['mode']} · {m['rr']} — "
-                   f"{m['expectancy']:+.2f}R over {m['trades']} trades")
+        out.append(f"  {n}. {m['name']} · {m.get('pair','')} · {m['mode']} · "
+                   f"{m['rr']} — {m['expectancy']:+.2f}R over {m['trades']} trades")
 
     positive = [r for r in rankable if r["expectancy"] > 0]
     out.append("")
@@ -134,6 +205,8 @@ def main() -> int:
     p.add_argument("--auto", action="store_true",
                    help="every data/*.csv, mode inferred from the filename")
     p.add_argument("--dir", default="data")
+    p.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1),
+                   help="parallel workers (default: cores minus one)")
     args = p.parse_args()
 
     jobs = []
@@ -156,15 +229,21 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    rows = []
+    work = []
     for path, mode in jobs:
         df = load(path)
-        print(f"\n{os.path.basename(path)} — {len(df)} bars, {mode}, "
+        pair = os.path.basename(path).split("_")[0].upper()
+        print(f"{os.path.basename(path)} — {len(df)} bars, {mode}, "
               f"{df.index[0]:%Y-%m-%d} to {df.index[-1]:%Y-%m-%d}")
         if len(df) < 800:
             print(f"  only {len(df)} bars; too short to be worth ranking")
             continue
-        rows += sweep(df, mode)
+        for key in ORDER:
+            for rr in RR_SETS:
+                work.append((path, mode, pair, key, rr))
+
+    print(f"\n{len(work)} backtests on {args.jobs} worker(s)\n")
+    rows = sweep_all(work, args.jobs)
 
     print()
     print(table(rows))

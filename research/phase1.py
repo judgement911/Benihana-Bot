@@ -25,9 +25,20 @@ def load(path):
     return df[["open", "high", "low", "close"]]
 
 
-def run_one(df, inst, fam_fn, tps, part=split.IS):
+_FEATURE_CACHE = {}
+
+
+def feats(key, df):
+    """Features are expensive (20s on 120,000 bars) and identical for every
+    family run against the same file. Build once, reuse."""
+    if key not in _FEATURE_CACHE:
+        _FEATURE_CACHE[key] = features.build(df)
+    return _FEATURE_CACHE[key]
+
+
+def run_one(df, inst, fam_fn, tps, part=split.IS, fkey=None):
     """One family, one instrument, one target set, on one slice."""
-    f = features.build(df)                      # features over the FULL series
+    f = feats(fkey or id(df), df)               # features over the FULL series
     sig, stop = fam_fn(df, f)                   # so warmup is not wasted,
     sig = shift_causal(sig).astype(float)       # then shifted and sliced
     stop = shift_causal(stop)
@@ -54,7 +65,7 @@ def main():
             continue
         for name, (fn, desc) in families.FAMILIES.items():
             for tname, tps in TARGETS.items():
-                res = run_one(df, inst, fn, tps)
+                res = run_one(df, inst, fn, tps, fkey=path)
                 rs = res.r_series(net=True)
                 m = metrics.summarise(rs, [t.bars_held for t in res.trades], tf)
                 g = metrics.summarise(res.r_series(net=False))

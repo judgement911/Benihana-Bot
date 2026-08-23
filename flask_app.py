@@ -31,6 +31,7 @@ import motivation
 import news
 import strategies
 import strategy as base
+import subscriptions
 import users
 import view
 from market_data import DataError, fetch_ohlc
@@ -166,7 +167,15 @@ def deliver(chat_id: int, message_id: int | None, text: str,
 
 
 def allowed(user_id: int) -> bool:
-    return (not C.ALLOWED_USER_IDS) or (user_id in C.ALLOWED_USER_IDS)
+    """The access gate.
+
+    With subscriptions off this is exactly what it always was, so upgrading
+    cannot lock out an existing deployment. With them on, the owner is
+    always in and everyone else needs unexpired time on the clock.
+    """
+    if not C.SUBSCRIPTIONS_ENABLED:
+        return (not C.ALLOWED_USER_IDS) or (user_id in C.ALLOWED_USER_IDS)
+    return subscriptions.active(user_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -774,7 +783,8 @@ def help_text(lang: str = i18n.EN) -> str:
         "<code>/management off</code>\n\n"
         f"⚙️ <b>{t('sec_settings')}</b>\n"
         "<code>/language english</code> · <code>/language bahasa</code>\n"
-        "<code>/settings</code> · <code>/status</code> · <code>/resetdata</code>\n\n"
+        "<code>/settings</code> · <code>/status</code> · <code>/resetdata</code>\n"
+        "<code>/subscription</code> · <code>/whoami</code>\n\n"
         f"💬 <b>{t('sec_other')}</b>\n"
         "<code>/news</code> · <code>/motivation</code> · <code>/help</code>\n\n"
         f"<i>{t('help_footer')}</i>"
@@ -912,6 +922,103 @@ def do_news(chat_id: int, user_id: int):
     send(chat_id, out)
 
 
+# --------------------------------------------------------------------------- #
+#  Subscriptions — access, not payment
+# --------------------------------------------------------------------------- #
+def do_subscription(chat_id: int, user_id: int):
+    """What the caller's own access looks like."""
+    lang = lang_of(user_id)
+    out = f"{i18n.t('sub_yours', lang)}\n"
+    out += "━━━━━━━━━━━━━━━━━━━━\n\n"
+
+    if subscriptions.is_owner(user_id):
+        out += i18n.t("sub_owner", lang) + "\n"
+    else:
+        until = subscriptions.expires_at(user_id)
+        left = subscriptions.days_left(user_id)
+        if until and left > 0:
+            out += i18n.t("sub_active", lang,
+                          until=until.astimezone(news.WIB).strftime(
+                              "%d %b %Y, %H:%M") + " UTC+7",
+                          days=f"{left:.1f}") + "\n"
+            if left <= 5:
+                out += "\n" + i18n.t("sub_soon", lang, days=f"{left:.1f}") + "\n"
+        else:
+            out += i18n.t("sub_expired", lang, uid=user_id) + "\n"
+
+    if not C.SUBSCRIPTIONS_ENABLED:
+        out += "\n" + i18n.t("sub_off", lang)
+    send(chat_id, out)
+
+
+def _owner_only(chat_id: int, user_id: int) -> bool:
+    if subscriptions.is_owner(user_id):
+        return True
+    send(chat_id, i18n.t("sub_owner_only", lang_of(user_id)))
+    return False
+
+
+def do_grant(chat_id: int, user_id: int, args: list[str]):
+    lang = lang_of(user_id)
+    if not _owner_only(chat_id, user_id):
+        return
+    if len(args) < 2 or not args[0].lstrip("-").isdigit():
+        send(chat_id, i18n.t("sub_grant_usage", lang))
+        return
+    try:
+        days = float(args[1])
+        if not 0 < days <= 3650:
+            raise ValueError
+    except ValueError:
+        send(chat_id, i18n.t("sub_grant_usage", lang))
+        return
+
+    target = int(args[0])
+    plan = args[2] if len(args) > 2 else "standard"
+    rec = subscriptions.grant(target, days, plan, granted_by=user_id)
+    until = datetime.fromisoformat(rec["until"]).astimezone(news.WIB)
+    send(chat_id, i18n.t("sub_granted", lang, days=f"{days:g}", uid=target,
+                         until=until.strftime("%d %b %Y, %H:%M") + " UTC+7"))
+
+
+def do_revoke(chat_id: int, user_id: int, args: list[str]):
+    lang = lang_of(user_id)
+    if not _owner_only(chat_id, user_id):
+        return
+    if not args or not args[0].lstrip("-").isdigit():
+        send(chat_id, "Usage: <code>/revoke &lt;user_id&gt;</code>")
+        return
+    target = int(args[0])
+    key = "sub_revoked" if subscriptions.revoke(target) else "sub_nothing"
+    send(chat_id, i18n.t(key, lang, uid=target))
+
+
+def do_subs(chat_id: int, user_id: int):
+    lang = lang_of(user_id)
+    if not _owner_only(chat_id, user_id):
+        return
+    rows = subscriptions.everyone()
+    if not rows:
+        send(chat_id, i18n.t("sub_list_empty", lang))
+        return
+
+    live = sum(1 for r in rows if r["active"])
+    out = "🎟 <b>SUBSCRIBERS</b>\n"
+    out += "━━━━━━━━━━━━━━━━━━━━\n"
+    out += f"<b>{live}</b> active · <b>{len(rows) - live}</b> lapsed\n\n"
+    for r in rows[:40]:
+        dot = "🟢" if r["active"] else "⚪"
+        when = r["until"].astimezone(news.WIB).strftime("%d %b %Y") \
+            if r["until"] else "-"
+        out += (f"{dot} <code>{r['user_id']}</code> · {html.escape(r['plan'])}\n"
+                f"   {when}"
+                + (f"  ({r['days_left']:.0f}d left)" if r["active"] else "")
+                + "\n")
+    if len(rows) > 40:
+        out += f"\n<i>… and {len(rows) - 40} more</i>"
+    send(chat_id, out)
+
+
 def handle_message(msg: dict):
     chat_id = msg["chat"]["id"]
     user_id = msg.get("from", {}).get("id", 0)
@@ -928,8 +1035,18 @@ def handle_message(msg: dict):
         send(chat_id, f"Your Telegram user ID: <code>{user_id}</code>")
         return
 
+    # Reachable without access, deliberately: someone whose time ran out
+    # needs to be able to see that that is what happened, and renewing
+    # requires an ID they can only get from the bot.
+    if cmd == "/subscription":
+        do_subscription(chat_id, user_id)
+        return
+
     if not allowed(user_id):
-        send(chat_id, i18n.t("not_authorised", lang_of(user_id)))
+        # Tell them their ID. Without it they cannot ask for access, and
+        # "not authorised" on its own is a dead end.
+        key = "sub_denied" if C.SUBSCRIPTIONS_ENABLED else "not_authorised"
+        send(chat_id, i18n.t(key, lang_of(user_id), uid=user_id))
         return
 
     lang = lang_of(user_id)
@@ -984,6 +1101,12 @@ def handle_message(msg: dict):
             for a in args) else None)
     elif cmd == "/news":
         do_news(chat_id, user_id)
+    elif cmd == "/grant":
+        do_grant(chat_id, user_id, args)
+    elif cmd == "/revoke":
+        do_revoke(chat_id, user_id, args)
+    elif cmd == "/subs":
+        do_subs(chat_id, user_id)
     elif cmd == "/symbols":
         do_symbols(chat_id)
     else:

@@ -223,6 +223,67 @@ S: dict[str, dict[str, str]] = {
     },
 
     # ---------------------------------------------------------- /resetdata
+    "sub_yours": {EN: "🎟 <b>YOUR ACCESS</b>", ID: "🎟 <b>AKSES ANDA</b>"},
+    "sub_owner": {
+        EN: "👑 Owner — unlimited, never expires.",
+        ID: "👑 Pemilik — tanpa batas, tidak pernah kedaluwarsa.",
+    },
+    "sub_active": {
+        EN: "✅ Active until <b>{until}</b>\n⏳ {days} days left",
+        ID: "✅ Aktif sampai <b>{until}</b>\n⏳ sisa {days} hari",
+    },
+    "sub_expired": {
+        EN: ("⛔ No active subscription.\n\nAsk the owner for access and "
+             "give them your ID: <code>{uid}</code>"),
+        ID: ("⛔ Tidak ada langganan aktif.\n\nMinta akses ke pemilik dan "
+             "berikan ID Anda: <code>{uid}</code>"),
+    },
+    "sub_soon": {
+        EN: "⚠️ Your access ends in {days} days.",
+        ID: "⚠️ Akses Anda berakhir dalam {days} hari.",
+    },
+    "sub_denied": {
+        EN: ("⛔ <b>Subscription required</b>\n\nThis bot is private. Send "
+             "your ID to the owner to get access:\n<code>{uid}</code>"),
+        ID: ("⛔ <b>Perlu langganan</b>\n\nBot ini privat. Kirim ID Anda ke "
+             "pemilik untuk mendapatkan akses:\n<code>{uid}</code>"),
+    },
+    "sub_granted": {
+        EN: ("✅ Granted <b>{days}</b> days to <code>{uid}</code>\n"
+             "Now active until <b>{until}</b>"),
+        ID: ("✅ Memberikan <b>{days}</b> hari ke <code>{uid}</code>\n"
+             "Aktif sampai <b>{until}</b>"),
+    },
+    "sub_revoked": {
+        EN: "🚫 Access removed for <code>{uid}</code>.",
+        ID: "🚫 Akses dicabut untuk <code>{uid}</code>.",
+    },
+    "sub_nothing": {
+        EN: "Nothing to revoke — <code>{uid}</code> had no subscription.",
+        ID: "Tidak ada yang dicabut — <code>{uid}</code> tidak berlangganan.",
+    },
+    "sub_grant_usage": {
+        EN: ("Usage: <code>/grant &lt;user_id&gt; &lt;days&gt; [plan]</code>\n"
+             "Example: <code>/grant 123456789 30 standard</code>"),
+        ID: ("Cara: <code>/grant &lt;user_id&gt; &lt;hari&gt; [paket]</code>\n"
+             "Contoh: <code>/grant 123456789 30 standard</code>"),
+    },
+    "sub_list_empty": {
+        EN: "No subscriptions on record.",
+        ID: "Belum ada langganan tercatat.",
+    },
+    "sub_owner_only": {
+        EN: "That command is for the owner only.",
+        ID: "Perintah itu hanya untuk pemilik.",
+    },
+    "sub_off": {
+        EN: ("<i>Subscriptions are switched off — everyone allowed by "
+             "ALLOWED_USER_IDS can use the bot. Set "
+             "SUBSCRIPTIONS_ENABLED=1 to turn them on.</i>"),
+        ID: ("<i>Langganan sedang nonaktif — semua yang ada di "
+             "ALLOWED_USER_IDS bisa memakai bot. Set "
+             "SUBSCRIPTIONS_ENABLED=1 untuk mengaktifkan.</i>"),
+    },
     "sec_open": {EN: "Open positions", ID: "Posisi terbuka"},
     "ev_nfp": {EN: "Non-farm payrolls", ID: "Non-farm payrolls"},
     "ev_nfp_note": {

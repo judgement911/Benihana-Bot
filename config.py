@@ -33,6 +33,19 @@ ALLOWED_USER_IDS = {
     int(x) for x in _raw_allowed.replace(" ", "").split(",") if x.isdigit()
 } if _raw_allowed else set()
 
+# Accounts that are never billed and never expire — the operator's own.
+# Falls back to ALLOWED_USER_IDS so an existing deployment keeps working.
+_raw_owner = _get("OWNER_IDS").strip()
+OWNER_IDS = {
+    int(x) for x in _raw_owner.replace(" ", "").split(",") if x.isdigit()
+} if _raw_owner else set()
+
+# Subscriptions are OFF unless switched on. A deployment that upgrades to
+# this version must not suddenly start refusing its existing users, so the
+# gate keeps its old behaviour until the operator opts in.
+SUBSCRIPTIONS_ENABLED = _get("SUBSCRIPTIONS_ENABLED", "0") not in (
+    "0", "false", "False", "")
+
 # ---------------------------------------------------------------- risk config
 ACCOUNT_BALANCE = float(_get("ACCOUNT_BALANCE", "5000"))
 RISK_PCT = float(_get("RISK_PCT", "1.0"))          # % of balance per trade

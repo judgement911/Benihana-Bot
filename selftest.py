@@ -823,7 +823,9 @@ def check_commands() -> bool:
              "/language english", "/setconf 70", "/setconf off",
              "/strategy", "/strategy shogun", "/strategy auto",
              "/daily", "/weekly", "/monthly", "/update", "/swingupdate",
-             "/management", "/resetdata", "/news", "/notacommand"]
+             "/management", "/resetdata", "/news", "/subscription",
+             "/subs", "/grant", "/grant 123 30", "/revoke", "/revoke 123",
+             "/notacommand"]
 
     # Every command runs twice, once with risk management off and once with
     # it on. Half of /status only exists in the second state, so a fixture
@@ -1049,6 +1051,92 @@ def check_news() -> bool:
     return ok
 
 
+
+def check_subscriptions() -> bool:
+    """Access control, which is the one place a bug costs money or trust.
+
+    The properties worth guaranteeing are that the operator cannot lock
+    themselves out, that expiry is a fact about a date rather than about a
+    job having run, and that renewing early does not destroy time already
+    paid for.
+    """
+    import os as _os
+    import tempfile as _tf
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    import config as _C
+    import subscriptions as S
+
+    real_store, real_owner = S.STORE, getattr(_C, "OWNER_IDS", set())
+    S.STORE = _os.path.join(_tf.mkdtemp(), "subs.json")
+    _C.OWNER_IDS = {111}
+    ok = True
+    now = _dt.now(_tz.utc)
+
+    # 1. the owner is never a customer
+    if not S.active(111) or S.days_left(111) != float("inf"):
+        print("  x the owner is not unconditionally allowed")
+        ok = False
+    # ... and stays in even with the store deleted underneath them
+    _os.unlink(S.STORE) if _os.path.exists(S.STORE) else None
+    if not S.active(111):
+        print("  x losing the store locked the owner out")
+        ok = False
+
+    # 2. a stranger is out until granted
+    if S.active(222):
+        print("  x an unknown user was allowed in")
+        ok = False
+    S.grant(222, 30, granted_by=111)
+    if not S.active(222):
+        print("  x a granted user was not allowed in")
+        ok = False
+
+    # 3. renewing early adds time rather than replacing it
+    S.grant(222, 30, granted_by=111)
+    if not 59 < S.days_left(222) <= 60:
+        print(f"  x early renewal gave {S.days_left(222):.1f} days, wanted ~60")
+        ok = False
+
+    # 4. expiry is evaluated against the clock, not swept by a job
+    if S.active(222, now=now + _td(days=61)):
+        print("  x a lapsed subscription still counted as active")
+        ok = False
+    if not S.active(222, now=now + _td(days=59)):
+        print("  x a live subscription was treated as lapsed")
+        ok = False
+
+    # 5. revoke is immediate and idempotent
+    if not S.revoke(222) or S.active(222) or S.revoke(222):
+        print("  x revoke did not behave as expected")
+        ok = False
+
+    # 6. a corrupt store denies strangers rather than admitting them
+    for junk in ("not json", "[]", '{"222": {"until": "nonsense"}}'):
+        open(S.STORE, "w").write(junk)
+        if S.active(222):
+            print(f"  x a corrupt store ({junk[:20]}) let a stranger in")
+            ok = False
+        if not S.active(111):
+            print("  x a corrupt store locked the owner out")
+            ok = False
+
+    # 7. the gate must not change behaviour until it is switched on
+    import flask_app as F
+    was = _C.SUBSCRIPTIONS_ENABLED
+    _C.SUBSCRIPTIONS_ENABLED = False
+    _C.ALLOWED_USER_IDS = {999}
+    if not F.allowed(999) or F.allowed(222):
+        print("  x the legacy allowlist stopped working with subscriptions off")
+        ok = False
+    _C.SUBSCRIPTIONS_ENABLED = was
+
+    S.STORE, _C.OWNER_IDS = real_store, real_owner
+    if ok:
+        print("  subscriptions: owner never expires, renewal extends, "
+              "a corrupt store denies rather than admits")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -1091,4 +1179,5 @@ if __name__ == "__main__":
     ok &= check_commands()
     ok &= check_calibration()
     ok &= check_news()
+    ok &= check_subscriptions()
     raise SystemExit(0 if ok else 1)

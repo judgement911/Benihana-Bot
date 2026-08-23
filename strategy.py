@@ -422,6 +422,9 @@ def evaluate(
     direction = trend_dir
     out["direction"] = direction
     out["atr_ratio"] = round(float(e["atr_ratio"]), 3) if e.get("atr_ratio") else None
+    # Recorded so research can bucket a trade by the conditions it was taken
+    # in, rather than inferring the regime after the fact.
+    out["adx_trend"] = round(float(t["adx"]), 1)
 
     # ----------------------------------------------------------------- SCORING
     reasons = []

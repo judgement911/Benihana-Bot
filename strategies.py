@@ -52,7 +52,7 @@ import indicators as ind
 import instruments as I
 import probability as prob
 import strategy as base
-from strategy import FLAT, LONG, SHORT
+from strategy import FLAT, LONG, ORDER_LABEL, SHORT
 
 
 @dataclass(frozen=True)
@@ -83,7 +83,8 @@ def _common_vetoes(e: dict, t: dict, b: dict, spec, now_utc, entry_df) -> list:
 
 def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
               e, entry_df, highs, lows, atr_e, spec, inst, balance, risk_pct,
-              risk_usd, now_utc, in_session, short_history) -> dict:
+              risk_usd, now_utc, in_session, short_history,
+              adx_trend=None) -> dict:
     """Everything downstream of 'which way and how strongly'.
 
     Levels, order type, confidence and probability are strategy-independent:
@@ -96,6 +97,8 @@ def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
     out["missing"] = missing
     out["direction"] = direction
     out["atr_ratio"] = round(float(e["atr_ratio"]), 3) if e.get("atr_ratio") else None
+    if adx_trend is not None:
+        out["adx_trend"] = round(float(adx_trend), 1)
 
     def build(px):
         return base._build_levels(px, direction=direction, highs=highs, lows=lows,
@@ -275,7 +278,8 @@ def evaluate_crimson(entry_df, trend_df, bias_df, spec, now_utc=None,
                      atr_e=float(e["atr"]), spec=spec, inst=inst,
                      balance=balance, risk_pct=risk_pct, risk_usd=risk_usd,
                      now_utc=now_utc, in_session=in_sess,
-                     short_history=b["ema_slow_n"] < 200)
+                     short_history=b["ema_slow_n"] < 200,
+                     adx_trend=t["adx"])
 
 
 # --------------------------------------------------------------------------- #
@@ -363,7 +367,8 @@ def evaluate_kage(entry_df, trend_df, bias_df, spec, now_utc=None,
                      highs=highs, lows=lows, atr_e=float(e["atr"]), spec=spec,
                      inst=inst, balance=balance, risk_pct=risk_pct,
                      risk_usd=risk_usd, now_utc=now_utc, in_session=in_sess,
-                     short_history=b["ema_slow_n"] < 200)
+                     short_history=b["ema_slow_n"] < 200,
+                     adx_trend=t["adx"])
 
 
 def _evaluate_ronin(*a, **kw) -> dict:
@@ -545,7 +550,8 @@ def evaluate_zanshin(entry_df, trend_df, bias_df, spec, now_utc=None,
                      e=e, entry_df=entry_df, highs=highs, lows=lows,
                      atr_e=atr_e, spec=spec, inst=inst, balance=balance,
                      risk_pct=risk_pct, risk_usd=risk_usd, now_utc=now_utc,
-                     in_session=in_sess, short_history=b["ema_slow_n"] < 200)
+                     in_session=in_sess, short_history=b["ema_slow_n"] < 200,
+                     adx_trend=t["adx"])
 
 
 REGISTRY["zanshin"] = Strategy(
@@ -558,3 +564,216 @@ REGISTRY["zanshin"] = Strategy(
     "di balik ekor candle.",
     evaluate_zanshin)
 ORDER = ("ronin", "crimson", "kage", "zanshin")
+
+
+# --------------------------------------------------------------------------- #
+#  Shogun Pulse — fade the overextension, exit on the clock
+# --------------------------------------------------------------------------- #
+def evaluate_shogun(entry_df, trend_df, bias_df, spec, now_utc=None,
+                    balance=None, risk_pct=None, instrument=None,
+                    risk_usd=None) -> dict:
+    """When price stretches further than it usually sustains, fade it — and
+    be gone within the hour.
+
+    This is the only strategy here that was found by measurement rather than
+    written from an idea. Phase 2 of the research correlated 37 candidate
+    features against forward returns and the same answer kept surfacing on
+    gold and EUR/USD independently, at p<0.01: price extended from its own
+    recent mean tends to come back, and the information lives at a horizon of
+    six to twelve bars. Nothing else in this codebase has that provenance.
+
+    So the rules are deliberately thin. One signal, one stop, one clock:
+
+        SIGNAL  20-bar z-score of close beyond +/- 2.5
+        STOP    2.0 ATR
+        EXIT    12 bars, at the market, whatever the price
+
+    The exit is the part people get wrong, and it is why the earlier
+    liquidity-sweep attempt at the same idea failed. The edge exists for
+    about an hour. Holding for R-multiples means holding long past it and
+    handing the gain back to noise, so this closes on time rather than on a
+    target.
+
+    WHAT IT IS NOT. Gold, 5-minute, and a broker with a raw spread. EUR/USD
+    at this timeframe costs about 0.17R a trade against any plausible edge,
+    which is arithmetic, not pessimism. It survived a validation split
+    (gross +0.155 in-sample, +0.159 on data it had never seen) but is not
+    individually significant there, and it has not yet faced walk-forward,
+    Monte Carlo, regime splits or out-of-sample. Promising, not proven.
+    """
+    out, e, t, b, inst, balance, risk_pct, now_utc = _scaffold(
+        entry_df, trend_df, bias_df, spec, now_utc, balance, risk_pct,
+        instrument, risk_usd, "shogun")
+
+    vetoes = _common_vetoes(e, t, b, spec, now_utc, entry_df)
+    close = entry_df["close"]
+    n = C.SHOGUN_LOOKBACK
+    if len(close) < n + 5:
+        vetoes.append("Not enough history for a z-score")
+    if vetoes:
+        out["vetoes"] = vetoes
+        return out
+
+    mean = float(close.tail(n).mean())
+    sd = float(close.tail(n).std(ddof=0))
+    if sd <= 0:
+        out["vetoes"] = ["Price has not moved — no z-score to read"]
+        return out
+    z = (float(e["close"]) - mean) / sd
+
+    if abs(z) < C.SHOGUN_Z:
+        out["vetoes"] = [f"z-score {z:+.2f} — not stretched enough "
+                         f"(needs +/-{C.SHOGUN_Z:g})"]
+        return out
+
+    direction = SHORT if z > 0 else LONG      # fade the stretch
+    reasons, missing = [], []
+
+    def add(key, ok, pts, mx, text):
+        reasons.append({"key": key, "ok": bool(ok), "points": float(pts),
+                        "max": mx, "text": text})
+        if not ok:
+            missing.append(text)
+
+    W = C.SHOGUN_WEIGHTS
+    # Extremity is the whole signal, so it carries most of the score. Capped
+    # at 4 sigma: beyond that it is usually a news print, not a stretch.
+    extreme = min(abs(z), 4.0)
+    add("stretch", True,
+        W["stretch"] * min(1.0, (extreme - C.SHOGUN_Z) / 1.5 * 0.5 + 0.5),
+        W["stretch"], f"{abs(z):.2f} sigma from the {n}-bar mean")
+
+    calm = 0.7 <= (e["atr_ratio"] or 1.0) <= 1.8
+    add("volatility", calm, W["volatility"] if calm else 0, W["volatility"],
+        f"range {e['atr_ratio']:.2f}x normal"
+        + ("" if calm else " — reversion is unreliable here"))
+
+    in_sess = base._in_session(now_utc, spec)
+    add("session", in_sess, W["session"] if in_sess else 0, W["session"],
+        "inside the liquid session" if in_sess
+        else "thin session — the spread eats this setup")
+
+    # A violent trend is where fading gets you hurt. Not a veto, a discount.
+    calm_trend = t["adx"] < C.ADX_STRONG
+    add("not_trending", calm_trend, W["not_trending"] if calm_trend else 0,
+        W["not_trending"],
+        f"{spec.trend_tf} ADX {t['adx']:.1f}"
+        + ("" if calm_trend else " — fading a strong trend is how you get run over"))
+
+    highs, lows = ind.last_swings(entry_df)
+    res = _finalise(out, direction=direction, reasons=reasons, missing=missing,
+                    trigger_present=True, e=e, entry_df=entry_df,
+                    highs=highs, lows=lows, atr_e=float(e["atr"]), spec=spec,
+                    inst=inst, balance=balance, risk_pct=risk_pct,
+                    risk_usd=risk_usd, now_utc=now_utc, in_session=in_sess,
+                    short_history=False, adx_trend=t["adx"])
+    # The clock is the exit, so the signal has to say so.
+    res["time_exit_bars"] = C.SHOGUN_HOLD
+    res["z_score"] = round(z, 2)
+    # A fade is taken now or not at all. The pullback-zone order logic belongs
+    # to Ronin; resting a limit further into the stretch would be waiting for
+    # the very thing the signal says is about to stop.
+    if res.get("order"):
+        res["order"] = {
+            "kind": "market",
+            "price": res["levels"]["entry"] if res.get("levels") else float(e["close"]),
+            "label": ORDER_LABEL[("market", direction)],
+            "note_key": "order_fade", "note_args": {"z": f"{abs(z):.1f}"},
+            "note": f"{abs(z):.1f} sigma stretched — taken at market",
+        }
+    return res
+
+
+REGISTRY["shogun"] = Strategy(
+    "shogun", "Shogun Pulse",
+    "Overextension fade. When the 20-bar z-score passes 2.5 sigma, takes the "
+    "other side and exits after 12 bars on the clock. Gold 5min, raw spread.",
+    "Fade overextension. Saat z-score 20-bar melewati 2.5 sigma, ambil arah "
+    "sebaliknya dan keluar setelah 12 bar. Gold 5min, spread raw.",
+    evaluate_shogun)
+ORDER = ("ronin", "crimson", "kage", "zanshin", "shogun")
+
+
+# --------------------------------------------------------------------------- #
+#  All-in-One — route to whatever has actually worked here
+# --------------------------------------------------------------------------- #
+def evaluate_auto(entry_df, trend_df, bias_df, spec, now_utc=None,
+                  balance=None, risk_pct=None, instrument=None,
+                  risk_usd=None) -> dict:
+    """Hand the decision to the strategy with the best MEASURED record in
+    this instrument and mode — or refuse, if none has one.
+
+    The obvious design was to run all five and take the highest confidence.
+    That was tested and it fails: on gold, three of the five show lower
+    expectancy in their top confidence bucket than their middle one, so
+    picking the most confident signal selects the worse trades. Those scores
+    are weighted sums nobody ever checked against an outcome.
+
+    So selection uses measured expectancy instead — what each strategy
+    actually returned, in this mode, on this instrument, across a backtest —
+    and only where the result clears a t of 1.96 on at least a hundred
+    trades. A positive number that cannot be told apart from zero decides
+    nothing.
+
+    The important half is the refusal. A "best of five" rule always returns
+    something, and in conditions where all five lose it returns the
+    least-bad loser wearing a signal's clothing. When nothing qualifies this
+    says so and stops, which on present evidence is most of the time: on
+    gold, nothing is proven at scalp or intraday, and only swing has
+    candidates at all.
+    """
+    import performance as perf
+
+    inst = instrument or I.GOLD
+    ranked = perf.proven(inst.key, spec.name)
+
+    if not ranked:
+        out, e, t, b, inst, balance, risk_pct, now_utc = _scaffold(
+            entry_df, trend_df, bias_df, spec, now_utc, balance, risk_pct,
+            instrument, risk_usd, "auto")
+        elsewhere = perf.where_it_works(inst.key)
+        msg = (f"No strategy has a proven edge on {inst.display} {spec.name}. "
+               f"Nothing here cleared t={perf.SIGNIFICANCE} on "
+               f"{perf.MIN_TRADES}+ trades.")
+        if elsewhere:
+            where = ", ".join(sorted(elsewhere))
+            msg += f" Measured results exist for: {where}."
+        out["vetoes"] = [msg]
+        out["auto_reason"] = msg
+        return out
+
+    # Ask each proven candidate in turn; take the first that actually fires.
+    tried = []
+    for rec in ranked:
+        key = rec["strategy"]
+        if key not in REGISTRY or key == "auto":
+            continue
+        res = REGISTRY[key].evaluate(entry_df, trend_df, bias_df, spec,
+                                     now_utc, balance, risk_pct, instrument,
+                                     risk_usd)
+        tried.append((key, res.get("decision"), rec))
+        if res.get("decision") == "ENTRY":
+            res["auto_picked"] = key
+            res["auto_measured"] = rec
+            res["strategy"] = "auto"
+            return res
+
+    # Nothing fired. Return the best candidate's own answer so the user sees
+    # what it is waiting for, rather than a bare refusal.
+    key, _, rec = tried[0]
+    res = REGISTRY[key].evaluate(entry_df, trend_df, bias_df, spec, now_utc,
+                                 balance, risk_pct, instrument, risk_usd)
+    res["auto_picked"] = key
+    res["auto_measured"] = rec
+    res["strategy"] = "auto"
+    return res
+
+
+REGISTRY["auto"] = Strategy(
+    "auto", "All-in-One",
+    "Routes to whichever strategy has the best MEASURED expectancy for this "
+    "instrument and timeframe, and refuses to signal where none is proven.",
+    "Memilih strategi dengan ekspektasi TERUKUR terbaik untuk instrumen dan "
+    "timeframe ini, dan menolak memberi sinyal jika belum ada yang terbukti.",
+    evaluate_auto)
+ORDER = ("ronin", "crimson", "kage", "zanshin", "shogun", "auto")

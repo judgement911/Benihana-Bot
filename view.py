@@ -23,6 +23,7 @@ import html
 import i18n
 import instruments as I
 import money as M
+from strategy import TF_SECONDS as base_TF_SECONDS
 import probability as prob
 import sessions as SESS
 from strategy import DIR_NAME
@@ -101,6 +102,16 @@ def _levels_lines(res: dict, live: bool, lang: str = i18n.EN) -> str:
         f"{_e(lv.get('risk_display') or lv['risk_points'])}",
         "",
     ]
+
+    # A strategy that closes on the clock has no targets to show. Printing
+    # TP1/2/3 for it would describe a trade it does not take — the position
+    # is flat at the bell whatever the price is doing.
+    bars = res.get("time_exit_bars")
+    if bars:
+        mins = bars * (base_TF_SECONDS.get(res["timeframes"]["entry"], 900) // 60)
+        dur = f"{mins} min" if mins < 90 else f"{mins / 60:.1f} h"
+        lines.append(f"⏱ {i18n.t('time_exit', lang, bars=bars, dur=dur)}")
+        return "\n".join(lines)
 
     pr = res.get("probability") or {}
     odds = {round(float(row["r"]), 3): row["p"] for row in pr.get("targets", [])}
@@ -189,22 +200,48 @@ def _compact(symbol: str, res: dict, lang: str = i18n.EN) -> str:
     out += f"🕐 {_e(_subhead(res, with_price=not has_plan))}\n"
     out += _context_line(res, lang) + "\n\n"
 
+    timed = bool(res.get("time_exit_bars"))
     if has_plan:
         out += _levels_lines(res, live=dec == "ENTRY", lang=lang) + "\n\n"
-        rr = max(lv["tp_multiples"])
         risk_txt = res.get("risk_display") or _cash(lv["risk_cash"])
+        # No reward-to-risk figure when there is no target to reach: the trade
+        # is worth whatever the clock finds, and quoting 1:3 would describe a
+        # payoff it never pursues.
+        rr_txt = "" if timed else f" · 1:{max(lv['tp_multiples']):g} R:R"
         if lv.get("lots") is not None:
             out += (f"💰 <b>{M.fmt_lots(lv['lots'])} {i18n.t('lots', lang)}</b> · "
-                    f"{_e(risk_txt)} {i18n.t('risk', lang)} · 1:{rr:g} R:R\n")
+                    f"{_e(risk_txt)} {i18n.t('risk', lang)}{rr_txt}\n")
         else:
-            out += f"💰 {_e(risk_txt)} {i18n.t('risk', lang)} · 1:{rr:g} R:R\n"
+            out += f"💰 {_e(risk_txt)} {i18n.t('risk', lang)}{rr_txt}\n"
             if lv.get("lots_below_min"):
                 out += (f"⚠️ <i>"
                         f"{_e(i18n.t('lot_too_small', lang, min=M.C.LOT_MIN))}</i>\n")
 
-    nums = _headline_numbers(res, lang)
-    if nums:
-        out += f"📊 {nums}\n"
+    if timed:
+        # The probability model answers "does the target come before the
+        # stop". With no target the question is meaningless, so confidence is
+        # shown alone rather than dressed up with odds that describe a
+        # different trade.
+        conf = res.get("confidence") or {}
+        if conf:
+            out += (f"📊 {i18n.t('confidence', lang)} "
+                    f"<b>{int(conf.get('value', 0))}%</b> · "
+                    f"<i>{_e(i18n.t('no_odds_timed', lang))}</i>\n")
+    else:
+        nums = _headline_numbers(res, lang)
+        if nums:
+            out += f"📊 {nums}\n"
+
+    # All-in-One must show its working: which strategy it handed off to and
+    # what that choice was based on. A router that hides its reasoning is
+    # just another opaque score.
+    picked = res.get("auto_picked")
+    if picked:
+        m = res.get("auto_measured") or {}
+        from strategies import REGISTRY as _REG
+        name = _REG[picked].name if picked in _REG else picked
+        out += (f"🤖 <i>{_e(name)} — measured {m.get('expectancy', 0):+.3f}R "
+                f"over {m.get('trades', 0)} trades (t={m.get('t', 0):+.2f})</i>\n")
 
     order = res.get("order") or {}
     if dec != "ENTRY":

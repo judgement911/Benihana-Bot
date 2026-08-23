@@ -37,14 +37,33 @@ LONG, SHORT, FLAT = 1, -1, 0
 
 @dataclass
 class Costs:
-    """All in fractions of the 1R stop distance, so they scale with the trade."""
-    spread_r: float = 0.0
-    slippage_r: float = 0.0
-    commission_r: float = 0.0
+    """Dealing costs in PRICE units, converted to R per trade.
 
-    @property
-    def total(self) -> float:
-        return self.spread_r + self.slippage_r + self.commission_r
+    This has to be per-trade, not a flat R figure, because the cost of a
+    trade in R is spread divided by that trade's stop distance — and that is
+    the entire scalping question. The same 0.30 spread on gold is 0.006R
+    against a 50-point swing stop and 0.075R against a 4-point scalp stop:
+    a rounding error in one case and a tenth of the risk budget in the other.
+    Charging a flat R would hide exactly the effect being investigated.
+    """
+    spread: float = 0.0          # full spread in price units
+    slippage: float = 0.0        # extra adverse fill, price units
+    commission_r: float = 0.0    # broker fee, genuinely proportional to size
+
+    def r_for(self, risk: float) -> float:
+        if risk <= 0:
+            return 0.0
+        return (self.spread + self.slippage) / risk + self.commission_r
+
+    @classmethod
+    def for_instrument(cls, inst, slip_mult: float = 0.5, commission_r: float = 0.0):
+        """Spread from the instrument, slippage as a fraction of it.
+
+        Half a spread of slippage is a deliberately unkind default: retail
+        fills on a stop order in a fast market are frequently worse.
+        """
+        return cls(spread=inst.spread, slippage=inst.spread * slip_mult,
+                   commission_r=commission_r)
 
 
 @dataclass
@@ -88,10 +107,10 @@ def simulate(df: pd.DataFrame, signal: np.ndarray, stop_dist: np.ndarray,
     o = df["open"].to_numpy(float)
     h = df["high"].to_numpy(float)
     l = df["low"].to_numpy(float)
+    c_arr = df["close"].to_numpy(float)
     n = len(df)
     mults = np.asarray(target_mults, float)
     k = len(mults)
-    cost = costs.total
 
     trades: list[Trade] = []
     i = 0
@@ -131,7 +150,21 @@ def simulate(df: pd.DataFrame, signal: np.ndarray, stop_dist: np.ndarray,
         else:
             exit_reason, i_exit = "timeout", min(j + max_bars, n) - 1
 
-        r_gross = (-1.0 if hit == 0 else float(mults[:hit].sum() / k))
+        if exit_reason == "timeout":
+            # A trade closed by the clock exits at the market, so it is worth
+            # whatever it is worth — scoring it as a full stop-out was simply
+            # wrong, and it makes any time-exit strategy untestable because
+            # every one of its trades ends this way.
+            r_gross = d * (c_arr[i_exit] - entry) / risk
+            if hit:
+                # Slices already banked keep their value; only the remainder
+                # is marked to market.
+                banked = float(mults[:hit].sum() / k)
+                remaining = (k - hit) / k
+                r_gross = banked + remaining * d * (c_arr[i_exit] - entry) / risk
+        else:
+            r_gross = (-1.0 if hit == 0 else float(mults[:hit].sum() / k))
+        cost = costs.r_for(risk)
         trades.append(Trade(i, i_exit, d, entry, stop, tuple(targets), hit,
                             r_gross, r_gross - cost, i_exit - j, exit_reason))
         i = i_exit + 1                         # no overlapping positions

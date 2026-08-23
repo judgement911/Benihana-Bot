@@ -28,3 +28,8 @@ bakeoff_results.json
 # ...except downloaded history, which exists precisely to be
 # committed so a machine with spare CPU can backtest it.
 !data/*.csv
+
+# Generated backtest output — reproducible from fullgrid.py, not source.
+research/out/
+research/*_results.csv
+research/*_ic.csv

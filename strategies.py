@@ -692,3 +692,88 @@ REGISTRY["shogun"] = Strategy(
     "sebaliknya dan keluar setelah 12 bar. Gold 5min, spread raw.",
     evaluate_shogun)
 ORDER = ("ronin", "crimson", "kage", "zanshin", "shogun")
+
+
+# --------------------------------------------------------------------------- #
+#  All-in-One — route to whatever has actually worked here
+# --------------------------------------------------------------------------- #
+def evaluate_auto(entry_df, trend_df, bias_df, spec, now_utc=None,
+                  balance=None, risk_pct=None, instrument=None,
+                  risk_usd=None) -> dict:
+    """Hand the decision to the strategy with the best MEASURED record in
+    this instrument and mode — or refuse, if none has one.
+
+    The obvious design was to run all five and take the highest confidence.
+    That was tested and it fails: on gold, three of the five show lower
+    expectancy in their top confidence bucket than their middle one, so
+    picking the most confident signal selects the worse trades. Those scores
+    are weighted sums nobody ever checked against an outcome.
+
+    So selection uses measured expectancy instead — what each strategy
+    actually returned, in this mode, on this instrument, across a backtest —
+    and only where the result clears a t of 1.96 on at least a hundred
+    trades. A positive number that cannot be told apart from zero decides
+    nothing.
+
+    The important half is the refusal. A "best of five" rule always returns
+    something, and in conditions where all five lose it returns the
+    least-bad loser wearing a signal's clothing. When nothing qualifies this
+    says so and stops, which on present evidence is most of the time: on
+    gold, nothing is proven at scalp or intraday, and only swing has
+    candidates at all.
+    """
+    import performance as perf
+
+    inst = instrument or I.GOLD
+    ranked = perf.proven(inst.key, spec.name)
+
+    if not ranked:
+        out, e, t, b, inst, balance, risk_pct, now_utc = _scaffold(
+            entry_df, trend_df, bias_df, spec, now_utc, balance, risk_pct,
+            instrument, risk_usd, "auto")
+        elsewhere = perf.where_it_works(inst.key)
+        msg = (f"No strategy has a proven edge on {inst.display} {spec.name}. "
+               f"Nothing here cleared t={perf.SIGNIFICANCE} on "
+               f"{perf.MIN_TRADES}+ trades.")
+        if elsewhere:
+            where = ", ".join(sorted(elsewhere))
+            msg += f" Measured results exist for: {where}."
+        out["vetoes"] = [msg]
+        out["auto_reason"] = msg
+        return out
+
+    # Ask each proven candidate in turn; take the first that actually fires.
+    tried = []
+    for rec in ranked:
+        key = rec["strategy"]
+        if key not in REGISTRY or key == "auto":
+            continue
+        res = REGISTRY[key].evaluate(entry_df, trend_df, bias_df, spec,
+                                     now_utc, balance, risk_pct, instrument,
+                                     risk_usd)
+        tried.append((key, res.get("decision"), rec))
+        if res.get("decision") == "ENTRY":
+            res["auto_picked"] = key
+            res["auto_measured"] = rec
+            res["strategy"] = "auto"
+            return res
+
+    # Nothing fired. Return the best candidate's own answer so the user sees
+    # what it is waiting for, rather than a bare refusal.
+    key, _, rec = tried[0]
+    res = REGISTRY[key].evaluate(entry_df, trend_df, bias_df, spec, now_utc,
+                                 balance, risk_pct, instrument, risk_usd)
+    res["auto_picked"] = key
+    res["auto_measured"] = rec
+    res["strategy"] = "auto"
+    return res
+
+
+REGISTRY["auto"] = Strategy(
+    "auto", "All-in-One",
+    "Routes to whichever strategy has the best MEASURED expectancy for this "
+    "instrument and timeframe, and refuses to signal where none is proven.",
+    "Memilih strategi dengan ekspektasi TERUKUR terbaik untuk instrumen dan "
+    "timeframe ini, dan menolak memberi sinyal jika belum ada yang terbukti.",
+    evaluate_auto)
+ORDER = ("ronin", "crimson", "kage", "zanshin", "shogun", "auto")

@@ -232,6 +232,17 @@ def _compact(symbol: str, res: dict, lang: str = i18n.EN) -> str:
         if nums:
             out += f"📊 {nums}\n"
 
+    # All-in-One must show its working: which strategy it handed off to and
+    # what that choice was based on. A router that hides its reasoning is
+    # just another opaque score.
+    picked = res.get("auto_picked")
+    if picked:
+        m = res.get("auto_measured") or {}
+        from strategies import REGISTRY as _REG
+        name = _REG[picked].name if picked in _REG else picked
+        out += (f"🤖 <i>{_e(name)} — measured {m.get('expectancy', 0):+.3f}R "
+                f"over {m.get('trades', 0)} trades (t={m.get('t', 0):+.2f})</i>\n")
+
     order = res.get("order") or {}
     if dec != "ENTRY":
         needs = _needs(res)

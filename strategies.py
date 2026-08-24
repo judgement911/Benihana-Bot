@@ -1,43 +1,49 @@
 """
-THE THREE SELECTABLE STRATEGIES
-===============================
+THE SELECTABLE STRATEGIES
+=========================
 
-Ronin Edge is the original and is untouched — it still runs through
-strategy.evaluate() exactly as it always has. The two additions are not
-re-tunings of it; they look for different things and will disagree with it
-and with each other, which is the point of offering a choice.
+Ronin Edge is the original and still runs through strategy.evaluate()
+exactly as it always has. The others are not re-tunings of it; they look
+for different things and will disagree with it and with each other, which
+is the point of offering a choice.
 
   Ronin Edge     trend pullback. Wait for an established trend, buy the
                  retracement into the EMA20 zone when momentum turns back.
-                 Trades with the trend, entering against the short-term move.
 
   Crimson Flow   momentum breakout. Wait for a Donchian extreme to give way
                  in the direction the higher timeframe already permits, with
-                 ADX rising and range expanding. Trades with the move,
-                 entering as it accelerates.
+                 ADX rising and range expanding.
 
-  Kage Protocol  volatility squeeze. Wait for Bollinger width to compress to
-                 a multi-week low, then take the first decisive close out of
-                 the range. Trades the transition from quiet to loud, and is
-                 flat whenever there is no squeeze to resolve.
+  Kage Protocol  prior-day extension break. Wait for a close a clear 1.5 ATR
+                 beyond yesterday's high or low, during London and New York
+                 only. Replaced a Bollinger squeeze in Aug 2026 that measured
+                 -0.357 R per trade at scalp over 871 trades.
 
-All three return the identical result contract, so the view, the journal,
+  Zanshin Sweep  liquidity grab. Wait for stops to be run beyond a level that
+                 has held twice, then reclaimed.
+
+  Shogun Pulse   overextension fade with a clock exit.
+
+  All-in-One     routes to whichever ruleset has the best MEASURED
+                 expectancy for the instrument and mode, and stays silent
+                 where none is proven.
+
+Every one returns the identical result contract, so the view, the journal,
 the probability model and the lifecycle tracker neither know nor care which
-one produced a signal.
+produced a signal.
 
 ON THE EVIDENCE
 ---------------
-Ten candidate rulesets live in `candidates.py` and `bakeoff.py` ranks them
-on real history. Crimson Flow and Kage Protocol are the two the design
-argument favours — each covers a market state Ronin structurally cannot
-trade, so the three together span trend continuation, breakout and
-transition rather than crowding one regime.
+These are now measured rather than argued for. measured.json holds
+expectancy and a t-statistic per strategy, mode and reward target, and
+performance.proven() is what All-in-One routes on — it requires t >= 1.96
+and at least 100 trades before it will call anything proven.
 
-That is a design argument, not a measurement. It has NOT been confirmed on
-market data, because the environment this was written in has no market data
-access. Run `python bakeoff.py --live` against your own key before treating
-either as validated; it prints the full table and will happily tell you that
-a different pair of candidates is better.
+The honest summary of that table: only three combinations clear the bar.
+Kage on scalp (+0.115 R, t 2.6), Crimson on swing (+0.283 R, t 2.6) and
+Zanshin on swing (+0.182 R, t 2.2). Everything else is noise or negative,
+and Zanshin on scalp and Shogun on swing are significantly negative. A
+strategy being available is not a claim that it makes money in every mode.
 """
 from __future__ import annotations
 
@@ -392,10 +398,31 @@ def evaluate_kage(entry_df, trend_df, bias_df, spec, now_utc=None,
     broke_dn = hi > dn_trigger and close < dn_trigger
     broke = broke_up or broke_dn
     if not broke:
-        near = min(abs(close - up_trigger), abs(close - dn_trigger)) / max(atr_e, 1e-9)
-        vetoes.append(
-            f"No break — closest extension is {near:.1f} ATR away "
-            f"(needs a close {k:g} ATR clear of {pd_high:.2f} / {pd_low:.2f})")
+        # An absolute distance reads as "you are far from a break" whether
+        # price is short of the level or already well past it, and those are
+        # opposite situations. Say which.
+        if close > up_trigger:
+            gone = (close - up_trigger) / max(atr_e, 1e-9)
+            vetoes.append(
+                f"Break already happened — price is {gone:.1f} ATR beyond "
+                f"{up_trigger:.2f} and this ruleset only takes the bar that "
+                f"crosses, not a move that is already running")
+        elif close < dn_trigger:
+            gone = (dn_trigger - close) / max(atr_e, 1e-9)
+            vetoes.append(
+                f"Break already happened — price is {gone:.1f} ATR below "
+                f"{dn_trigger:.2f} and this ruleset only takes the bar that "
+                f"crosses, not a move that is already running")
+        else:
+            up_away = (up_trigger - close) / max(atr_e, 1e-9)
+            dn_away = (close - dn_trigger) / max(atr_e, 1e-9)
+            near, side, lvl = ((up_away, "above", up_trigger)
+                               if up_away <= dn_away
+                               else (dn_away, "below", dn_trigger))
+            vetoes.append(
+                f"No break yet — still inside yesterday's range, {near:.1f} ATR "
+                f"{side} {lvl:.2f} (needs a close {k:g} ATR clear of "
+                f"{pd_high:.2f} / {pd_low:.2f})")
     if vetoes:
         out["vetoes"] = vetoes
         return out

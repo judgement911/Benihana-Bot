@@ -95,7 +95,7 @@ def _common_vetoes(e: dict, t: dict, b: dict, spec, now_utc, entry_df) -> list:
 def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
               e, entry_df, highs, lows, atr_e, spec, inst, balance, risk_pct,
               risk_usd, now_utc, in_session, short_history,
-              adx_trend=None, sl_band=None) -> dict:
+              adx_trend=None, sl_band=None, pending_orders=True) -> dict:
     """Everything downstream of 'which way and how strongly'.
 
     Levels, order type, confidence and probability are strategy-independent:
@@ -131,11 +131,19 @@ def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
     else:
         out["decision"] = "NO TRADE"
 
+    # The order plan can move the entry to a pullback zone, which rebuilds
+    # the stop — so this has to happen BEFORE the dealing-cost check below,
+    # or the cost is measured against a stop the user is never shown.
+    out["order"] = base._order_plan(
+        "ENTRY" if not pending_orders else out["decision"], direction,
+        float(e["close"]), e, entry_df, spec, atr_e, inst)
+    if out["order"]["kind"] != "market":
+        out["levels"], room_rr, _ = build(out["order"]["price"])
+
     # However good the setup looks, a trade whose spread eats a fifth of its
     # own risk is not worth taking: it needs a 20% edge just to break even.
-    # This is checked in price units rather than as a volatility ratio,
-    # because the case it exists for — a frozen tape over a weekend — drags
-    # the rolling median down with it and hides from any relative test.
+    # Measured on the levels the user is actually shown — a pending order
+    # rebuilds the stop, and it is that stop the spread has to be paid out of.
     cost_r = inst.cost_r(out["levels"]["risk_points"])
     if cost_r is not None and cost_r > C.MAX_COST_R:
         out["decision"] = "NO TRADE"
@@ -143,11 +151,6 @@ def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
             f"Spread alone costs {cost_r:.0%} of the risk on a "
             f"{out['levels']['risk_display']} stop — market too thin to trade"
         ]
-
-    out["order"] = base._order_plan(out["decision"], direction, float(e["close"]),
-                                    e, entry_df, spec, atr_e, inst)
-    if out["order"]["kind"] != "market":
-        out["levels"], room_rr, _ = build(out["order"]["price"])
 
     news_hour = now_utc.hour in C.NEWS_WARNING_HOURS_UTC
     out["news_warning"] = news_hour
@@ -789,7 +792,8 @@ def evaluate_shogun(entry_df, trend_df, bias_df, spec, now_utc=None,
                     highs=highs, lows=lows, atr_e=float(e["atr"]), spec=spec,
                     inst=inst, balance=balance, risk_pct=risk_pct,
                     risk_usd=risk_usd, now_utc=now_utc, in_session=in_sess,
-                    short_history=False, adx_trend=t["adx"])
+                    short_history=False, adx_trend=t["adx"],
+                    pending_orders=False)
     # The clock is the exit, so the signal has to say so.
     res["time_exit_bars"] = C.SHOGUN_HOLD
     res["z_score"] = round(z, 2)

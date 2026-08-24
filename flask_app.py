@@ -795,6 +795,12 @@ def do_signal_command(chat_id: int, user_id: int, args: list[str]):
             return
         risk_display = money.fmt(value, ccy)
         users.update(user_id, risk_amount={"value": value, "currency": ccy})
+        # If the conversion used a rate the operator typed rather than one
+        # the market quoted, say so before the signal rather than letting a
+        # position be sized from a number nobody checked today.
+        note = money.rate_note(ccy, lang)
+        if note:
+            send(chat_id, note)
 
     do_signal(chat_id, symbol_key, mode, user_id=user_id, risk_usd=risk_usd,
               risk_display=risk_display)

@@ -148,6 +148,16 @@ def usd_rate(currency: str, fetch=None) -> Optional[float]:
             _rate_cache[currency] = (time.time(), rate)
             return rate
 
+    # Free, keyless FX endpoints. Tried in order and cached for an hour, so
+    # a working one costs a single request a day in practice. Whether any is
+    # reachable depends on the host: a PythonAnywhere free account only
+    # allows sites on its own allow-list, which is exactly why there are
+    # several and why the manual rate below still exists.
+    live = _free_fx(currency)
+    if live:
+        _rate_cache[currency] = (time.time(), 1.0 / live)
+        return 1.0 / live
+
     if hit:
         return hit[1]                                 # stale beats nothing
 
@@ -158,6 +168,41 @@ def usd_rate(currency: str, fetch=None) -> Optional[float]:
     manual = _manual_rate(currency)
     if manual:
         return 1.0 / manual
+    return None
+
+
+# Keyless, no-signup FX sources. Each returns units of `currency` per USD.
+FREE_FX = (
+    ("https://open.er-api.com/v6/latest/USD",
+     lambda d, c: (d.get("rates") or {}).get(c)),
+    ("https://api.exchangerate-api.com/v4/latest/USD",
+     lambda d, c: (d.get("rates") or {}).get(c)),
+    ("https://api.frankfurter.app/latest?from=USD",
+     lambda d, c: (d.get("rates") or {}).get(c)),
+)
+
+
+def _free_fx(currency: str, timeout: float = 4.0) -> Optional[float]:
+    """Units of `currency` per USD from whichever public endpoint answers.
+
+    Deliberately short-timeout and failure-tolerant: this runs inside a
+    Telegram webhook that has about a minute in total, and a rate lookup is
+    not worth spending that on. If every source is unreachable — the normal
+    case behind a restrictive host allow-list — it returns None quietly and
+    the caller falls through to the configured rate.
+    """
+    import requests                                    # noqa: PLC0415
+    for url, pick in FREE_FX:
+        try:
+            r = requests.get(url, timeout=timeout)
+            if not r.ok:
+                continue
+            v = pick(r.json(), currency)
+            v = float(v) if v is not None else None
+        except Exception:                              # noqa: BLE001
+            continue
+        if v and v > 0:
+            return v
     return None
 
 
@@ -179,6 +224,15 @@ def rate_source(currency: str) -> str:
     if _rate_cache.get(currency):
         return "market"
     return "manual" if _manual_rate(currency) else "missing"
+
+
+def rate_note(currency: str, lang: str = "en") -> str:
+    """A line for the signal when the rate was typed rather than quoted."""
+    if rate_source(currency) != "manual":
+        return ""
+    import i18n                                        # noqa: PLC0415
+    per = _manual_rate(currency)
+    return i18n.t("fx_manual", lang, ccy=currency, rate=f"{per:,.0f}")
 
 
 def to_usd(value: float, currency: str, fetch=None) -> Optional[float]:

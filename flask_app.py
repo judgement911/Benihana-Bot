@@ -1346,19 +1346,36 @@ def webhook(secret: str):
             return jsonify(ok=True)      # genuine duplicate; already answered
         _inflight[update_id] = now
 
+    handled = False
     try:
         if "message" in update:
             handle_message(update["message"])
         elif "callback_query" in update:
             handle_callback(update["callback_query"])
+        handled = True
     except Exception:  # noqa: BLE001
         log.error("update handling failed: %s", traceback.format_exc())
+        # Say something. An unhandled error here used to be completely
+        # silent: the log had the traceback and the user had an empty chat.
+        chat = ((update.get("message") or {}).get("chat")
+                or (update.get("callback_query") or {}).get("message", {}).get("chat")
+                or {})
+        if chat.get("id"):
+            tg("sendMessage", chat_id=chat["id"],
+               text="⚠️ Something broke handling that. Try again in a moment.")
     finally:
         if update_id is not None:
             _inflight.pop(update_id, None)
-            _seen_updates.add(update_id)
-            if len(_seen_updates) > 500:
-                _seen_updates.clear()
+            # Only a SUCCESSFUL handling counts as answered. Marking it seen
+            # regardless meant a transient failure — a provider hiccup, a
+            # momentary error — discarded Telegram's retry as a duplicate,
+            # so the command vanished and the one delivery that could have
+            # worked was thrown away. Telegram gives up on its own after a
+            # few attempts, so a genuinely broken command cannot loop.
+            if handled:
+                _seen_updates.add(update_id)
+                if len(_seen_updates) > 500:
+                    _seen_updates.clear()
 
     return jsonify(ok=True)
 

@@ -860,6 +860,86 @@ def check_resolve_robustness() -> bool:
     return ok
 
 
+def check_webhook_retry() -> bool:
+    """A failed update must stay retryable, and must not be silent.
+
+    The finally block marked every update seen whether handling had
+    succeeded or not, so a transient failure discarded Telegram's retry as a
+    duplicate — the command vanished and the one delivery that could have
+    worked was thrown away. The user saw an empty chat and the traceback
+    went to a log file nobody reads.
+    """
+    import config as _C
+    import flask_app as F
+
+    real_send, real_tg, real_allowed, real_handle = (
+        F.send, F.tg, F.allowed, F.handle_message)
+    sent = []
+    F.send = lambda c, t, **k: sent.append(t)
+    F.tg = lambda m, **p: (sent.append(p.get("text", ""))
+                           if m == "sendMessage" else None) or {
+                               "ok": True, "result": {"message_id": 1}}
+    F.allowed = lambda uid: True
+    F._seen_updates.clear()
+    F._inflight.clear()
+    client = F.app.test_client()
+    ok = True
+
+    def post(uid):
+        return client.post(f"/webhook/{_C.WEBHOOK_SECRET}", json={
+            "update_id": uid,
+            "message": {"chat": {"id": 1}, "from": {"id": 5},
+                        "text": "/whoami"}})
+
+    try:
+        if client.post("/webhook/definitely-wrong", json={}).status_code != 403:
+            print("  x the webhook accepted a bad secret")
+            ok = False
+
+        sent.clear()
+        post(8001)
+        if not sent:
+            print("  x a normal update produced no reply")
+            ok = False
+        sent.clear()
+        post(8001)
+        if sent:
+            print("  x a duplicate update was answered twice")
+            ok = False
+
+        # A handler that raises: the user must hear about it, and the retry
+        # must still be allowed through.
+        F.handle_message = lambda m: (_ for _ in ()).throw(
+            RuntimeError("simulated worker failure"))
+        sent.clear()
+        post(8002)
+        if not sent:
+            print("  x a failed update told the user nothing at all")
+            ok = False
+        F.handle_message = real_handle
+        sent.clear()
+        post(8002)
+        if not sent:
+            print("  x the retry after a failure was discarded as a duplicate "
+                  "— the command is lost for good")
+            ok = False
+        sent.clear()
+        post(8002)
+        if sent:
+            print("  x once it succeeded, a further duplicate was answered again")
+            ok = False
+    finally:
+        F.send, F.tg, F.allowed, F.handle_message = (
+            real_send, real_tg, real_allowed, real_handle)
+        F._seen_updates.clear()
+        F._inflight.clear()
+
+    if ok:
+        print("  webhook: duplicates deduped, failures reported and still "
+              "retryable")
+    return ok
+
+
 def check_commands() -> bool:
     """Drive every offline command through the real dispatcher.
 
@@ -1888,6 +1968,7 @@ if __name__ == "__main__":
     print("\nSignal journal:")
     ok &= check_journal()
     ok &= check_resolve_robustness()
+    ok &= check_webhook_retry()
 
     print("\nCommands:")
     ok &= check_commands()

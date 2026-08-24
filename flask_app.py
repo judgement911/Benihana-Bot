@@ -795,6 +795,12 @@ def do_signal_command(chat_id: int, user_id: int, args: list[str]):
             return
         risk_display = money.fmt(value, ccy)
         users.update(user_id, risk_amount={"value": value, "currency": ccy})
+        # If the conversion used a rate the operator typed rather than one
+        # the market quoted, say so before the signal rather than letting a
+        # position be sized from a number nobody checked today.
+        note = money.rate_note(ccy, lang)
+        if note:
+            send(chat_id, note)
 
     do_signal(chat_id, symbol_key, mode, user_id=user_id, risk_usd=risk_usd,
               risk_display=risk_display)
@@ -871,6 +877,7 @@ def help_text(lang: str = i18n.EN) -> str:
         ("/status", "h_status"),
         ("/subscription", "h_subscription"),
         ("/resetdata", "h_resetdata"),
+        ("/usdrate 16800", "h_usdrate"),
     ])
     block(f"💬 {t('sec_other')}", [
         ("/news", "h_news"),
@@ -1104,6 +1111,59 @@ def do_revoke(chat_id: int, user_id: int, args: list[str]):
     send(chat_id, i18n.t(key, lang, uid=target))
 
 
+def do_usdrate(chat_id: int, user_id: int, args: list[str]):
+    """Set the IDR-per-USD rate from Telegram. Owner only.
+
+    It writes a file rather than a per-user setting because it is one global
+    number that every subscriber's sizing depends on — and because editing
+    pa_config.py and reloading the web app to change a number that moves
+    weekly is not a workflow anybody sustains.
+    """
+    lang = lang_of(user_id)
+    if not _owner_only(chat_id, user_id):
+        return
+    ccy = money.IDR
+    raw = (args[0] if args else "").strip().lower()
+
+    if raw in ("off", "clear", "auto", "none"):
+        money.set_override(ccy, None, by=user_id)
+        send(chat_id, i18n.t("rate_cleared", lang))
+        return
+
+    if not raw:
+        rec = money.override_info(ccy)
+        if rec:
+            days = rec.get("age_days")
+            age = (i18n.t("rate_age_stale" if (days or 0) > 14
+                          else "rate_age_fresh", lang, days=f"{days:.0f}")
+                   if days is not None else "")
+            send(chat_id, i18n.t("rate_show", lang, ccy=ccy,
+                                 rate=f"{rec['per_usd']:,.0f}", age=age))
+            return
+        cfg = money._manual_rate(ccy)
+        if cfg:
+            send(chat_id, i18n.t("rate_show", lang, ccy=ccy,
+                                 rate=f"{cfg:,.0f}",
+                                 age=i18n.t("rate_from_config", lang)))
+            return
+        send(chat_id, i18n.t("rate_none", lang, ccy=ccy))
+        return
+
+    try:
+        # Accept 16800, 16,800 and 16.800 — the last is how a rupiah amount
+        # is normally written, and rejecting it would look like a bug.
+        cleaned = raw.replace(",", "").replace(".", "").replace(" ", "")
+        per_usd = float(cleaned)
+        if not 1000 <= per_usd <= 100_000:
+            raise ValueError
+    except ValueError:
+        send(chat_id, i18n.t("rate_usage", lang))
+        return
+
+    money.set_override(ccy, per_usd, by=user_id)
+    send(chat_id, i18n.t("rate_set", lang, ccy=ccy, rate=f"{per_usd:,.0f}"))
+
+
 def do_subs(chat_id: int, user_id: int):
     lang = lang_of(user_id)
     if not _owner_only(chat_id, user_id):
@@ -1224,6 +1284,8 @@ def handle_message(msg: dict):
         do_revoke(chat_id, user_id, args)
     elif cmd == "/subs":
         do_subs(chat_id, user_id)
+    elif cmd == "/usdrate":
+        do_usdrate(chat_id, user_id, args)
     elif cmd == "/symbols":
         do_symbols(chat_id, lang)
     else:

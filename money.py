@@ -23,7 +23,11 @@ Lots:      brokers accept discrete lot steps, so 0.0457 is not an order. Sizes
 from __future__ import annotations
 
 import re
+import json
+import os
+import tempfile
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import config as C
@@ -148,6 +152,16 @@ def usd_rate(currency: str, fetch=None) -> Optional[float]:
             _rate_cache[currency] = (time.time(), rate)
             return rate
 
+    # Free, keyless FX endpoints. Tried in order and cached for an hour, so
+    # a working one costs a single request a day in practice. Whether any is
+    # reachable depends on the host: a PythonAnywhere free account only
+    # allows sites on its own allow-list, which is exactly why there are
+    # several and why the manual rate below still exists.
+    live = _free_fx(currency)
+    if live:
+        _rate_cache[currency] = (time.time(), 1.0 / live)
+        return 1.0 / live
+
     if hit:
         return hit[1]                                 # stale beats nothing
 
@@ -161,8 +175,109 @@ def usd_rate(currency: str, fetch=None) -> Optional[float]:
     return None
 
 
+# Keyless, no-signup FX sources. Each returns units of `currency` per USD.
+FREE_FX = (
+    ("https://open.er-api.com/v6/latest/USD",
+     lambda d, c: (d.get("rates") or {}).get(c)),
+    ("https://api.exchangerate-api.com/v4/latest/USD",
+     lambda d, c: (d.get("rates") or {}).get(c)),
+    ("https://api.frankfurter.app/latest?from=USD",
+     lambda d, c: (d.get("rates") or {}).get(c)),
+)
+
+
+def _free_fx(currency: str, timeout: float = 4.0) -> Optional[float]:
+    """Units of `currency` per USD from whichever public endpoint answers.
+
+    Deliberately short-timeout and failure-tolerant: this runs inside a
+    Telegram webhook that has about a minute in total, and a rate lookup is
+    not worth spending that on. If every source is unreachable — the normal
+    case behind a restrictive host allow-list — it returns None quietly and
+    the caller falls through to the configured rate.
+    """
+    import requests                                    # noqa: PLC0415
+    for url, pick in FREE_FX:
+        try:
+            r = requests.get(url, timeout=timeout)
+            if not r.ok:
+                continue
+            v = pick(r.json(), currency)
+            v = float(v) if v is not None else None
+        except Exception:                              # noqa: BLE001
+            continue
+        if v and v > 0:
+            return v
+    return None
+
+
+# A rate the owner set from Telegram. Kept in its own file rather than in
+# config so it survives a reload without an edit, and separate from users.json
+# because it is one global number, not a per-user setting.
+OVERRIDE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "fx_override.json")
+
+
+def _load_override() -> dict:
+    try:
+        with open(OVERRIDE_FILE, encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def set_override(currency: str, per_usd: Optional[float],
+                 by: int = 0) -> Optional[float]:
+    """Set, or clear with None, the units-per-USD rate for one currency.
+
+    Writing atomically because a half-written rate file would be read as no
+    rate at all, and the next IDR signal would be refused rather than sized.
+    """
+    data = _load_override()
+    key = currency.upper()
+    if per_usd is None:
+        data.pop(key, None)
+    else:
+        data[key] = {"per_usd": float(per_usd), "by": int(by),
+                     "at": datetime.now(timezone.utc).isoformat(
+                         timespec="seconds")}
+    d = os.path.dirname(os.path.abspath(OVERRIDE_FILE)) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=1)
+        os.replace(tmp, OVERRIDE_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    _rate_cache.pop(key, None)          # a new rate must take effect at once
+    return per_usd
+
+
+def override_info(currency: str) -> Optional[dict]:
+    """{'per_usd', 'at', 'by', 'age_days'} for a rate set from Telegram."""
+    rec = _load_override().get(currency.upper())
+    if not isinstance(rec, dict) or not rec.get("per_usd"):
+        return None
+    out = dict(rec)
+    try:
+        when = datetime.fromisoformat(str(rec.get("at")))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        out["age_days"] = (datetime.now(timezone.utc) - when).total_seconds() / 86400
+    except (TypeError, ValueError):
+        out["age_days"] = None
+    return out
+
+
 def _manual_rate(currency: str) -> Optional[float]:
-    """Units of `currency` per USD, from configuration. None if unset."""
+    """Units of `currency` per USD. What the owner typed wins over config."""
+    rec = override_info(currency)
+    if rec:
+        return float(rec["per_usd"])
     raw = getattr(C, f"USD_{currency.upper()}_RATE", "") or ""
     try:
         v = float(str(raw).replace(",", "").strip())
@@ -179,6 +294,15 @@ def rate_source(currency: str) -> str:
     if _rate_cache.get(currency):
         return "market"
     return "manual" if _manual_rate(currency) else "missing"
+
+
+def rate_note(currency: str, lang: str = "en") -> str:
+    """A line for the signal when the rate was typed rather than quoted."""
+    if rate_source(currency) != "manual":
+        return ""
+    import i18n                                        # noqa: PLC0415
+    per = _manual_rate(currency)
+    return i18n.t("fx_manual", lang, ccy=currency, rate=f"{per:,.0f}")
 
 
 def to_usd(value: float, currency: str, fetch=None) -> Optional[float]:

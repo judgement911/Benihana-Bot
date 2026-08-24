@@ -38,3 +38,6 @@ research/*_ic.csv
 subscriptions.json
 # User-maintained economic calendar
 events.json
+
+# Owner-set FX rate — per deployment, not source
+fx_override.json

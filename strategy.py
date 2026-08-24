@@ -68,9 +68,60 @@ _SNAP_CACHE: dict = {}
 _SNAP_CACHE_MAX = 512
 
 
+def _live_atr_median(a, fallback: float) -> float:
+    """What "normal volatility" is, measured over bars where the market was
+    actually open.
+
+    A plain median of the last 100 bars breaks every Monday. The window
+    reaches back into the weekend, where gold's 15-minute bars have a range
+    of about a quarter of a point against four points live, so the median
+    lands in the frozen cluster and an ordinary ATR reads as sixteen times
+    normal. On real history that refused 27% of Monday 06:00-14:00 bars as a
+    "news spike" against 0.1% on a Tuesday.
+
+    Two different situations have to be told apart, and the difference is
+    what share of the window is dead rather than how high the current bar is:
+
+      MOSTLY DEAD WINDOW — the weekend, or the first hours after the reopen.
+      There is no recent sample of normal at all, so the honest answer is no
+      opinion: return the current ATR and let the ratio be 1.0.
+
+      LIVE WINDOW WITH A SPIKE — one bar explodes against a real trading
+      baseline. That must still be caught, so the baseline is kept and the
+      ratio rises as it should.
+
+    The cost of the first rule is that a genuine spike inside a
+    mostly-frozen window is not flagged either, which in practice means the
+    Sunday reopen hour. That is accepted: a trade there still has to clear
+    the dealing-cost limit and the ruleset's own conditions, and the
+    alternative — dividing by a frozen number — refused 27% of every Monday
+    morning outright.
+    """
+    w = a.tail(C.VOL_BASELINE_BARS).dropna()
+    if len(w) < 30 or fallback <= 0:
+        return fallback
+
+    # Is this window a sample of the current regime at all? A weekend, or the
+    # first bars after the reopen, is not a quiet market — it is no market,
+    # and no filter rescues it, because when every bar is frozen the window's
+    # own "busy" level is frozen too. Measured against the current bar, more
+    # than half the window being dead means there is no baseline to be had.
+    if float((w < C.VOL_DEAD_SHARE_FRAC * fallback).mean()) > 0.5:
+        return fallback
+
+    busy = float(w.quantile(0.90))
+    live = w[w >= C.VOL_LIVE_FRACTION * busy] if busy > 0 else w
+    return float(live.median()) if len(live) >= 20 else float(w.median())
+
+
 def snapshot(df: pd.DataFrame) -> dict:
     close = df["close"]
-    key = (df.index[-1], len(df), float(close.iloc[-1]))
+    # The forming bar's high and low move while its close can stay identical
+    # between two polls, so a key made of (time, length, close) alone serves
+    # stale indicators for a bar whose range has since doubled. ATR, ADX and
+    # the volatility ratio all read high and low.
+    key = (df.index[-1], len(df), float(close.iloc[-1]),
+           float(df["high"].iloc[-1]), float(df["low"].iloc[-1]))
     hit = _SNAP_CACHE.get(key)
     if hit is not None:
         return hit
@@ -85,7 +136,7 @@ def snapshot(df: pd.DataFrame) -> dict:
     r = ind.rsi(close, 14)
 
     atr_now = float(a.iloc[-1])
-    atr_median = float(a.tail(100).median()) if len(a) >= 30 else atr_now
+    atr_median = _live_atr_median(a, atr_now)
 
     out = {
         "df": df,

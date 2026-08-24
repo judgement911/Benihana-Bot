@@ -1337,6 +1337,100 @@ def check_cost_veto() -> bool:
     return ok
 
 
+
+def check_kage_contract() -> bool:
+    """Kage's edge lives in three things the live machinery could quietly
+    undo, so each is asserted rather than assumed.
+
+    The stop must be 3 ATR. Cost in R is spread over stop distance, and
+    scalp's own band caps stops at 1.6 ATR, which leaves the same gross edge
+    netting +0.053 instead of +0.115. The clock must be honoured, because
+    the edge is flat from 12 bars to 36 and gone by 6. And it must refuse to
+    trade outside London and New York, where a retail gold spread is several
+    times its daytime figure and where this rule would otherwise hand back a
+    third of its profit.
+    """
+    import contextlib
+    import io
+    import instruments as I
+    import strategies as S
+    from indicators import resample_ohlc
+
+    base = synth(kind="uptrend", n=4000)
+    base = base / base["close"].iloc[0] * 4500.0
+    spec = C.MODES["scalp"]
+    ok = True
+
+    def run_at(ts, force_break=False):
+        e = base.copy()
+        # Re-stamp the history so the last bar lands on the wanted timestamp,
+        # keeping the 5-minute spacing the mode expects.
+        e.index = pd.date_range(end=ts, periods=len(e), freq="5min", tz="UTC")
+        if force_break:
+            # Drive the final bar well clear of yesterday's high so the rule
+            # certainly triggers. Without this the fixture may simply never
+            # break a level, and every assertion below would be skipped
+            # rather than checked — which is exactly how an earlier version
+            # of this test passed while the stop band was clamping.
+            yday = e.index.normalize()[-1] - pd.Timedelta(days=1)
+            prior = e[e.index.normalize() == yday]
+            top = float(prior["high"].max()) if len(prior) else float(e["high"].max())
+            lift = top + 40.0
+            e.iloc[-1, e.columns.get_loc("low")] = top - 1.0
+            e.iloc[-1, e.columns.get_loc("close")] = lift
+            e.iloc[-1, e.columns.get_loc("high")] = lift + 1.0
+        t = resample_ohlc(e, "15min")
+        b = resample_ohlc(e, "1h")
+        with contextlib.redirect_stdout(io.StringIO()):
+            return S.REGISTRY["kage"].evaluate(
+                e, t, b, spec, ts.to_pydatetime(), instrument=I.BY_KEY["xauusd"])
+
+    # A Wednesday inside the window, and the same bar outside it.
+    inside = pd.Timestamp("2026-08-19 13:00", tz="UTC")
+    outside = pd.Timestamp("2026-08-19 22:00", tz="UTC")
+    weekend = pd.Timestamp("2026-08-22 13:00", tz="UTC")     # Saturday
+
+    r_out = run_at(outside, force_break=True)
+    if r_out.get("decision") != "NO TRADE":
+        print("  x traded at 22:00 UTC, outside the thin-spread window")
+        ok = False
+    if not any("outside" in v for v in (r_out.get("vetoes") or [])):
+        print("  x no veto explaining the out-of-hours refusal")
+        ok = False
+
+    r_we = run_at(weekend, force_break=True)
+    if r_we.get("decision") != "NO TRADE":
+        print("  x traded on a Saturday")
+        ok = False
+
+    r_in = run_at(inside, force_break=True)
+    lv = r_in.get("levels")
+    if not lv:
+        print("  x the forced break produced no levels — the fixture no longer "
+              "exercises the rule, so nothing below is actually being tested")
+        ok = False
+    else:
+        want = C.KAGE_STOP_ATR
+        if abs((lv.get("stop_atr") or 0) - want) > 0.05:
+            print(f"  x stop is {lv.get('stop_atr')}x ATR, not the {want}x the "
+                  f"rule was measured with (the mode band clamped it)")
+            ok = False
+        if r_in.get("time_exit_bars") != C.KAGE_HOLD:
+            print(f"  x clock is {r_in.get('time_exit_bars')}, not {C.KAGE_HOLD}")
+            ok = False
+
+    # Scalp needs 48h of history for a complete prior day.
+    if C.MODES["scalp"].bars < 576:
+        print(f"  x scalp requests {C.MODES['scalp'].bars} bars — under 576 the "
+              f"prior day arrives truncated and PDH/PDL are wrong")
+        ok = False
+
+    if ok:
+        print(f"  kage: {C.KAGE_STOP_ATR}x ATR stop survives the mode band, "
+              f"{C.KAGE_HOLD}-bar clock set, refuses nights and weekends")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -1382,4 +1476,5 @@ if __name__ == "__main__":
     ok &= check_subscriptions()
     ok &= check_management_lifecycle()
     ok &= check_cost_veto()
+    ok &= check_kage_contract()
     raise SystemExit(0 if ok else 1)

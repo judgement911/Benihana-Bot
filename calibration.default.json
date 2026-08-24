@@ -238,83 +238,6 @@
     }
    }
   },
-  "kage": {
-   "scalp": {
-    "trades": 206,
-    "tp1": 0.4806,
-    "tp2": 0.2476,
-    "final": 0.1505,
-    "avg_r": -0.3569,
-    "buckets": {
-     "90-100": {
-      "n": 74,
-      "tp1": 0.4595,
-      "tp2": 0.2703,
-      "final": 0.1351
-     },
-     "70-79": {
-      "n": 47,
-      "tp1": 0.383,
-      "tp2": 0.1915,
-      "final": 0.1064
-     },
-     "80-89": {
-      "n": 85,
-      "tp1": 0.5529,
-      "tp2": 0.2588,
-      "final": 0.1882
-     }
-    }
-   },
-   "intraday": {
-    "trades": 203,
-    "tp1": 0.4729,
-    "tp2": 0.2365,
-    "final": 0.1773,
-    "avg_r": -0.1521,
-    "buckets": {
-     "70-79": {
-      "n": 56,
-      "tp1": 0.4643,
-      "tp2": 0.2143,
-      "final": 0.1786
-     },
-     "90-100": {
-      "n": 75,
-      "tp1": 0.4267,
-      "tp2": 0.1867,
-      "final": 0.1333
-     },
-     "80-89": {
-      "n": 72,
-      "tp1": 0.5278,
-      "tp2": 0.3056,
-      "final": 0.2222
-     }
-    }
-   },
-   "swing": {
-    "trades": 132,
-    "tp1": 0.4924,
-    "tp2": 0.2348,
-    "final": 0.1364,
-    "avg_r": -0.074,
-    "buckets": {
-     "90-100": {
-      "n": 78,
-      "tp1": 0.5128,
-      "tp2": 0.2179,
-      "final": 0.1538
-     },
-     "70-79": {
-      "n": 50,
-      "tp1": 0.5,
-      "tp2": 0.28,
-      "final": 0.12
-     }
-    }
-   }
-  },
   "zanshin": {
    "scalp": {
     "trades": 703,
@@ -475,5 +398,6 @@
     }
    }
   }
- }
+ },
+ "kage_note": "Kage's own calibration was removed when its ruleset was replaced: those hit rates were measured on the Bollinger squeeze and describe a strategy that no longer exists. It falls back to the pooled mode table until re-measured."
 }

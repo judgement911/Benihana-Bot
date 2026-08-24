@@ -97,6 +97,32 @@ def bucket_of(score: float) -> str:
 _cal_cache: Optional[tuple] = None
 
 
+def _is_superseded(path: str) -> bool:
+    """True when a local calibration is the old mode-only format.
+
+    /backtest --calibrate used to write a file with one rate per mode and no
+    TP2 and no per-strategy tables. It is read before the shipped one, so a
+    single thin run from months ago silently outranks a measurement over
+    4,939 trades — and because the old file has no TP2, that rung falls back
+    to the model while TP1 and TP3 are calibrated, which is how a signal ends
+    up quoting 41% for two-R and 40% for three-R.
+
+    A local file in the current format still wins: a fresh measurement on the
+    operator's own data should.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return True
+    if not isinstance(data, dict):
+        return True
+    if data.get("strategies"):
+        return False
+    modes = data.get("modes") or {}
+    return not any(isinstance(m, dict) and "tp2" in m for m in modes.values())
+
+
 def load_calibration(path: Optional[str] = None) -> dict:
     """Read calibration.json, re-reading only when the file's mtime changes.
 
@@ -107,8 +133,9 @@ def load_calibration(path: Optional[str] = None) -> dict:
     global _cal_cache
     if path is None:
         path = C.CALIBRATION_FILE
-        if not os.path.exists(path):
-            # Nothing measured on this host — fall back to what shipped.
+        if not os.path.exists(path) or _is_superseded(path):
+            # Nothing measured on this host, or what is here is the older and
+            # thinner format — fall back to what shipped.
             path = getattr(C, "CALIBRATION_FALLBACK", path)
 
     try:

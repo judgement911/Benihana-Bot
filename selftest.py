@@ -1019,7 +1019,44 @@ def check_calibration() -> bool:
         print("  x a 2-trade bucket was used as if it were evidence")
         ok = False
 
-    # 6. a missing or malformed file leaves the model untouched
+    # 6. an old mode-only file must not outrank the shipped measurement.
+    #    /backtest --calibrate used to write one rate per mode with no TP2,
+    #    so a single thin run silently beat 4,939 measured trades and left
+    #    TP2 on the model while TP1 and TP3 were calibrated — a signal
+    #    quoting 41% for two-R and 40% for three-R.
+    import json as _json
+    import os as _os
+    import tempfile as _tf
+    stale = {"modes": {"intraday": {"trades": 14, "tp1": 0.64, "final": 0.43,
+             "buckets": {"90-100": {"n": 9, "tp1": 0.67, "final": 0.44}}}}}
+    sp = _os.path.join(_tf.mkdtemp(), "calibration.json")
+    _json.dump(stale, open(sp, "w"))
+    real_file, real_cache = C.CALIBRATION_FILE, prob._cal_cache
+    C.CALIBRATION_FILE = sp
+    prob._cal_cache = None
+    try:
+        res = prob.estimate(score=92, targets_r=[1.0, 2.0, 3.0], room_rr=3.5,
+                            mode="intraday", strategy="crimson")
+        ps = [t["p"] for t in res["targets"]]
+        if any(t["source"] == "model" for t in res["targets"]):
+            print("  x a stale mode-only calibration left a rung on the model")
+            ok = False
+        if ps[1] - ps[2] < 0.03:
+            print(f"  x TP2 {ps[1]:.0%} and TP3 {ps[2]:.0%} are indistinguishable "
+                  f"— the stale file is still being used")
+            ok = False
+        # ...but a local file in the CURRENT format must still win.
+        fresh = dict(cal)
+        fresh["source"] = "local"
+        _json.dump(fresh, open(sp, "w"))
+        prob._cal_cache = None
+        if prob.calibration_status().get("source_note") != "local":
+            print("  x a fresh local calibration was ignored")
+            ok = False
+    finally:
+        C.CALIBRATION_FILE, prob._cal_cache = real_file, real_cache
+
+    # 7. a missing or malformed file leaves the model untouched
     for junk in ({}, {"modes": None}, {"modes": {"intraday": "nonsense"}}):
         r = prob.estimate(score=75, targets_r=[1.0, 2.0], room_rr=2.5,
                           mode="intraday", cal=junk)

@@ -4,15 +4,23 @@ Type `/signal xauusd scalp` in Telegram. Get back **ENTRY**, **WAIT**, or **NO T
 with a stop, targets, position size, and the odds it puts on them.
 
 ```
-🔴 SELL · XAUUSD
-SCALP · 5min · 19:45 UTC
+🟢 BUY · XAUUSD
+🕐 INTRADAY · 15min · 18:30 UTC+7
+🌃 London Session · 🟠 Medium Volatile
 
-Entry        2,569.09  market
-Stop Loss    2,576.34  7.3 pts
-TP 1         2,561.84  1R
-TP 2         2,554.58  2R
-0.07 lots · $50 risk · 1:2 R:R
-Confidence 60% · Odds 53% · Exp +0.17R
+📍 Entry 4,669.49 · at market
+🛑 Stop 4,647.94 · 21.6 pts
+
+🤡 TP1 4,691.04 · 1R · 21.6 pts · 62%
+🥵 TP2 4,712.59 · 2R · 43.1 pts · 40%
+💀 TP3 4,734.14 · 3R · 64.7 pts · 40%
+
+💰 300K IDR risk · 1:3 R:
+⚠️ Below the 0.01 lot minimum — this risk is too small to trade here.
+📊 Confidence 90% · Odds 60% · Exp +0.47R
+🌊 Crimson Flow
+
+⚠️ Disclaimer: Signals only. Trade at your own risk. We are not responsible for any losses. DYOR.
 ```
 
 Tap **Details** for the full scorecard, the confidence deductions, and where

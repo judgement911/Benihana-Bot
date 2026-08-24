@@ -80,64 +80,100 @@ def tradeable(rows) -> list[dict]:
 
 
 def format_scan(result: dict, limit: int = 12) -> str:
+    """A scan is mostly "no" — usually every symbol but one. So it is laid
+    out to be read from the top: the answer first, then the shortlist, and
+    the rejections compressed to a single line rather than a paragraph each.
+    """
     rows, mode = result["rows"], result["mode"]
     spec = C.MODES[mode]
-    out = "⚔️ <b>BENIHANA MARKET SCAN</b>\n"
-    out += (f"<i>{mode} · {spec.entry_tf} trigger · "
+
+    out = "🔭 <b>MARKET SCAN</b>\n"
+    out += "━━━━━━━━━━━━━━━━━━━━\n"
+    out += (f"<i>{mode} · {spec.entry_tf} chart · "
             f"{result['as_of'].strftime('%H:%M')} UTC</i>\n\n")
 
     if not rows:
-        out += "Nothing scanned — no data came back for any symbol.\n"
-    for res in rows[:limit]:
+        out += ("⚠️ No data came back for any symbol.\n"
+                "<i>Usually the daily request quota. Try again later.</i>")
+        return out
+
+    entries = [r for r in rows if r.get("decision") == "ENTRY"
+               and not r.get("vetoes")]
+    waits = [r for r in rows if r.get("decision") == "WAIT"
+             and not r.get("vetoes")]
+    quiet = [r for r in rows if r not in entries and r not in waits]
+
+    # The headline: how many of the markets looked at are actually offering
+    # something. Everything below is detail on that number.
+    if entries:
+        out += f"🎯 <b>{len(entries)} ready to trade</b>"
+    elif waits:
+        out += f"⏳ <b>{len(waits)} forming, none ready</b>"
+    else:
+        out += "😴 <b>Nothing here right now</b>"
+    out += f"  <i>· {len(rows)} scanned</i>\n\n"
+
+    def _line(res, icon):
         inst = I.BY_KEY.get(res.get("instrument") or "", I.GOLD)
-        dec = res.get("decision")
+        d = DIR_NAME.get(res.get("direction"), "")
         conf = (res.get("confidence") or {}).get("value")
-
-        if res.get("vetoes") or dec == "NO TRADE":
-            out += f"⚪ <b>{inst.display}</b> — NO TRADE\n"
-            continue
-
-        direction = DIR_NAME.get(res.get("direction"), "")
-        dot = DIR_DOT.get(direction, "⚪")
-        tag = "BUY" if direction == "BUY" else "SELL"
-        if dec == "WAIT":
-            out += f"{dot} <b>{inst.display}</b> — {tag} setup — {conf}% <i>(wait)</i>\n"
-        else:
-            out += f"{dot} <b>{inst.display}</b> — {tag} — {conf}%\n"
-
+        line = (f"{icon} <b>{inst.display}</b> {DIR_DOT.get(d, '')} {d}"
+                f"  <b>{conf}%</b>\n")
         lv = res.get("levels")
-        if lv and dec in ("ENTRY", "WAIT"):
+        if lv:
             order = (res.get("order") or {}).get("label", "")
-            out += f"      📍 {inst.fmt(lv['entry'])}"
-            out += f" · {order}" if order else ""
-            out += (f"\n      🛑 {inst.fmt(lv['stop'])}"
-                    f" · 🎯 {inst.fmt(lv['tps'][0])}\n")
+            line += f"   📍 {inst.fmt(lv['entry'])}"
+            line += f" <i>{order}</i>" if order else ""
+            line += (f"\n   🛑 {inst.fmt(lv['stop'])}"
+                     f"   🎯 {inst.fmt(lv['tps'][0])}\n")
+        return line
+
+    for res in entries[:limit]:
+        out += _line(res, "🟩")
+    if entries and waits:
+        out += "\n"
+    for res in waits[:max(0, limit - len(entries))]:
+        out += _line(res, "🟨")
+
+    # One line for everything that said no, instead of one line each.
+    if quiet:
+        names = ", ".join(
+            I.BY_KEY.get(r.get("instrument") or "", I.GOLD).display
+            for r in quiet[:10])
+        out += f"\n⚪ <i>Quiet: {names}"
+        out += f" +{len(quiet) - 10} more" if len(quiet) > 10 else ""
+        out += "</i>\n"
 
     best = tradeable(rows)
     if best:
         b = best[0]
         inst = I.BY_KEY.get(b["instrument"], I.GOLD)
         pr = b.get("probability")
-        out += "\n🏆 <b>Best setup</b>\n"
-        out += f"{inst.display} {DIR_NAME[b['direction']]}\n"
-        out += f"📊 Confidence: {(b.get('confidence') or {}).get('value')}%\n"
+        st = strategies.REGISTRY.get(b.get("strategy") or "")
+        out += "\n━━━━━━━━━━━━━━━━━━━━\n"
+        out += "🏆 <b>PICK OF THE SCAN</b>\n"
+        out += (f"{DIR_DOT.get(DIR_NAME[b['direction']], '')} "
+                f"<b>{inst.display} {DIR_NAME[b['direction']]}</b>"
+                f"  ·  {(b.get('confidence') or {}).get('value')}% sure\n")
+        if st:
+            out += f"{st.icon} {st.name}\n"
         if pr:
-            out += (f"🎲 Odds: {pr['targets'][0]['p']:.0%} to TP1 · "
-                    f"Exp {pr['expectancy_r']:+.2f}R\n")
-        out += f"⚖️ RR: 1:{max(b['levels']['tp_multiples']):g}\n"
-        out += f"🕐 TF: {b['timeframes']['entry']}\n"
+            out += (f"🎲 {pr['targets'][0]['p']:.0%} chance of reaching TP1  ·  "
+                    f"expects {pr['expectancy_r']:+.2f}R\n")
+        out += (f"⚖️ Risking 1 to make {max(b['levels']['tp_multiples']):g}\n"
+                f"<i>Run /signal {b['instrument']} {mode} for the full plan.</i>\n")
+    elif waits:
+        out += ("\n<i>Setups are building but none has triggered. "
+                "Waiting is the position.</i>\n")
     else:
-        out += "\n<i>No ENTRY anywhere in this sweep. That is a normal result.</i>\n"
+        out += ("\n<i>No trade anywhere is a normal answer — most of the time "
+                "the market is not offering one.</i>\n")
 
     notes = []
     if result["skipped"]:
-        notes.append(f"{len(result['skipped'])} skipped (out of time)")
+        notes.append(f"{len(result['skipped'])} ran out of time")
     if result["errors"]:
-        notes.append(f"{len(result['errors'])} no data")
+        notes.append(f"{len(result['errors'])} had no data")
     if notes:
-        out += f"\n<i>Scanned {len(rows)} in {result['elapsed']:.0f}s · " \
-               f"{' · '.join(notes)}.</i>\n"
-    if result["errors"]:
-        first = result["errors"][:3]
-        out += "<i>" + "; ".join(f"{k}: {m[:40]}" for k, m in first) + "</i>\n"
+        out += f"\n<i>Took {result['elapsed']:.0f}s · {' · '.join(notes)}.</i>"
     return out

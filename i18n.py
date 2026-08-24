@@ -295,6 +295,53 @@ S: dict[str, dict[str, str]] = {
     "upd_be_moved": {EN: "stop at breakeven — this trade cannot lose now",
                      ID: "stop di breakeven — trade ini tidak bisa rugi lagi"},
     "upd_be_orig": {EN: "was", ID: "semula"},
+    # /usdrate — the owner sets the IDR rate without editing a file.
+    "rate_set": {
+        EN: ("💱 <b>Rate set</b>\n\n1 USD = <b>{rate} {ccy}</b>\n\n"
+             "<i>Every {ccy} risk from now on is sized at this. Update it "
+             "when the rate moves — /usdrate on its own shows how old it is.</i>"),
+        ID: ("💱 <b>Kurs disimpan</b>\n\n1 USD = <b>{rate} {ccy}</b>\n\n"
+             "<i>Semua risiko {ccy} mulai sekarang memakai angka ini. "
+             "Perbarui saat kurs berubah — ketik /usdrate saja untuk melihat "
+             "umurnya.</i>"),
+    },
+    "rate_show": {
+        EN: "💱 <b>Current rate</b>\n\n1 USD = <b>{rate} {ccy}</b>\n{age}",
+        ID: "💱 <b>Kurs saat ini</b>\n\n1 USD = <b>{rate} {ccy}</b>\n{age}",
+    },
+    "rate_age_fresh": {EN: "<i>Set {days} days ago.</i>",
+                       ID: "<i>Diatur {days} hari lalu.</i>"},
+    "rate_age_stale": {
+        EN: "⚠️ <i>Set {days} days ago — worth checking today's rate.</i>",
+        ID: "⚠️ <i>Diatur {days} hari lalu — sebaiknya cek kurs hari ini.</i>",
+    },
+    "rate_from_config": {
+        EN: "<i>From pa_config.py. Send <code>/usdrate 16800</code> to "
+            "change it here instead.</i>",
+        ID: "<i>Dari pa_config.py. Kirim <code>/usdrate 16800</code> untuk "
+            "menggantinya dari sini.</i>",
+    },
+    "rate_none": {
+        EN: ("💱 <b>No {ccy} rate set</b>\n\nI try the live sources first, "
+             "but your data plan does not quote USD/{ccy}, so set it here:\n"
+             "<code>/usdrate 16800</code>"),
+        ID: ("💱 <b>Belum ada kurs {ccy}</b>\n\nSaya coba sumber langsung "
+             "dulu, tapi paket data Anda tidak menyediakan USD/{ccy}, jadi "
+             "atur di sini:\n<code>/usdrate 16800</code>"),
+    },
+    "rate_cleared": {
+        EN: "💱 <b>Rate cleared.</b> Back to live sources, then pa_config.py.",
+        ID: "💱 <b>Kurs dihapus.</b> Kembali ke sumber langsung, lalu "
+            "pa_config.py.",
+    },
+    "rate_usage": {
+        EN: ("Usage: <code>/usdrate 16800</code> — how many rupiah one "
+             "dollar buys.\n<code>/usdrate</code> shows the current one, "
+             "<code>/usdrate off</code> clears it."),
+        ID: ("Cara: <code>/usdrate 16800</code> — berapa rupiah untuk satu "
+             "dolar.\n<code>/usdrate</code> menampilkan yang berlaku, "
+             "<code>/usdrate off</code> menghapusnya."),
+    },
     # /start — the very first screen a stranger sees.
     "start_pick": {
         EN: "🌐 <b>Choose your language</b>\n<i>Pilih bahasa Anda</i>",
@@ -412,6 +459,10 @@ S: dict[str, dict[str, str]] = {
                        ID: "Kapan akses Anda berakhir."},
     "h_resetdata": {EN: "Erase your history and start the numbers from zero.",
                     ID: "Hapus riwayat Anda dan mulai angka dari nol."},
+    "h_usdrate": {
+        EN: "Owner only — set the rupiah rate the bot sizes IDR risk with.",
+        ID: "Khusus pemilik — atur kurs rupiah untuk menghitung risiko IDR.",
+    },
     "h_news": {EN: "Big releases coming up that move gold.",
                ID: "Rilis besar yang akan menggerakkan emas."},
     "h_motivation": {EN: "A line to read before you revenge-trade.",

@@ -834,6 +834,7 @@ def check_commands() -> bool:
              "/strategy", "/strategy shogun", "/strategy auto",
              "/daily", "/weekly", "/monthly", "/update", "/swingupdate",
              "/management", "/resetdata", "/news", "/subscription",
+             "/usdrate", "/usdrate 16800", "/usdrate off",
              "/subs", "/grant", "/grant 123 30", "/revoke", "/revoke 123",
              "/notacommand"]
 
@@ -1511,6 +1512,112 @@ def check_onboarding() -> bool:
     return ok
 
 
+
+def check_usdrate() -> bool:
+    """A rate the owner types sizes every subscriber's IDR trade, so the two
+    things that matter are that only the owner can set it and that setting it
+    takes effect immediately rather than after the hour-long cache expires.
+    """
+    import os as _os
+    import tempfile as _tf
+    import config as _C
+    import flask_app as F
+    import money
+    import subscriptions as S
+    import users as U
+
+    real_store, real_owner, real_over, real_cfg = (
+        S.STORE, getattr(_C, "OWNER_IDS", set()), money.OVERRIDE_FILE,
+        getattr(_C, "USD_IDR_RATE", ""))
+    real_send, real_enabled, real_free = F.send, _C.SUBSCRIPTIONS_ENABLED, money._free_fx
+    sent = []
+    F.send = lambda c, t, **k: sent.append(t)
+    _C.SUBSCRIPTIONS_ENABLED = True
+    _C.OWNER_IDS = {111}
+    _C.USD_IDR_RATE = ""
+    S.STORE = _os.path.join(_tf.mkdtemp(), "s.json")
+    money.OVERRIDE_FILE = _os.path.join(_tf.mkdtemp(), "fx.json")
+    money._free_fx = lambda c, timeout=4.0: None
+    money._rate_cache.clear()
+    ok = True
+
+    def dead(*a, **k):
+        raise RuntimeError("provider has no USD/IDR")
+
+    try:
+        S.grant(222, 30, granted_by=111)
+        U.update(111, language="en")
+        U.update(222, language="en")
+
+        def run(uid, text):
+            sent.clear()
+            F.handle_message({"chat": {"id": 1}, "from": {"id": uid},
+                              "text": text})
+            return sent[0] if sent else ""
+
+        # A paying subscriber must not be able to move everyone's sizing.
+        run(222, "/usdrate 99000")
+        if money._manual_rate("IDR") is not None:
+            print("  x a non-owner set the exchange rate")
+            ok = False
+
+        run(111, "/usdrate 17700")
+        if money._manual_rate("IDR") != 17700:
+            print(f"  x owner set 17700, stored {money._manual_rate('IDR')}")
+            ok = False
+
+        got = money.to_usd(17_700, "IDR", fetch=dead)
+        if got is None or abs(got - 1.0) > 0.01:
+            print(f"  x 17,700 IDR should be about $1.00 at this rate, got {got}")
+            ok = False
+
+        # A LIVE rate is cached for an hour and is checked before any manual
+        # one, so an owner correcting a bad live quote would be ignored until
+        # the cache expired. Setting an override must evict it. Priming the
+        # cache directly is the only way to reach this path, since the manual
+        # rate itself is never cached.
+        money._rate_cache["IDR"] = (__import__("time").time(), 1.0 / 99_000)
+        run(111, "/usdrate 16800")
+        got = money.to_usd(16_800, "IDR", fetch=dead)
+        if got is None or abs(got - 1.0) > 0.01:
+            print(f"  x a stale cached rate survived the correction: 16,800 "
+                  f"IDR came out as {got}, not ~$1.00")
+            ok = False
+
+        # Indonesian thousands separator.
+        run(111, "/usdrate 16.500")
+        if money._manual_rate("IDR") != 16500:
+            print(f"  x '16.500' parsed as {money._manual_rate('IDR')}")
+            ok = False
+        got = money.to_usd(16_500, "IDR", fetch=dead)
+        if got is None or abs(got - 1.0) > 0.01:
+            print(f"  x after correcting the rate a conversion still used the "
+                  f"cached one: 16,500 IDR came out as {got}, not ~$1.00")
+            ok = False
+
+        for junk in ("banana", "5", "9999999", "-100"):
+            before = money._manual_rate("IDR")
+            run(111, f"/usdrate {junk}")
+            if money._manual_rate("IDR") != before:
+                print(f"  x '{junk}' was accepted as a rate")
+                ok = False
+
+        run(111, "/usdrate off")
+        if money._manual_rate("IDR") is not None:
+            print("  x clearing the rate left it set")
+            ok = False
+    finally:
+        F.send, _C.SUBSCRIPTIONS_ENABLED, money._free_fx = (
+            real_send, real_enabled, real_free)
+        S.STORE, _C.OWNER_IDS = real_store, real_owner
+        money.OVERRIDE_FILE, _C.USD_IDR_RATE = real_over, real_cfg
+        money._rate_cache.clear()
+
+    if ok:
+        print("  usdrate: owner only, applies immediately, rejects nonsense")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -1558,4 +1665,5 @@ if __name__ == "__main__":
     ok &= check_cost_veto()
     ok &= check_kage_contract()
     ok &= check_onboarding()
+    ok &= check_usdrate()
     raise SystemExit(0 if ok else 1)

@@ -178,6 +178,11 @@ PULLBACK_ACCEPT = (0.20, 0.75)
 # Monday morning look like a permanent news spike.
 VOL_BASELINE_BARS = int(_get("VOL_BASELINE_BARS", "100"))
 VOL_LIVE_FRACTION = float(_get("VOL_LIVE_FRACTION", "0.40"))
+# A bar counts as dead when its ATR is under this share of the CURRENT one.
+# If over half the window is dead the market was closed for most of it, and
+# the baseline is abandoned rather than filtered — measuring "normal" against
+# a weekend is what made the reopen look like a 147x spike.
+VOL_DEAD_SHARE_FRAC = float(_get("VOL_DEAD_SHARE_FRAC", "0.15"))
 
 VOL_SPIKE_MULT = 2.5      # ATR vs its own median -> news spike, stand aside
 VOL_DEAD_MULT = 0.40      # ATR vs its own median -> dead tape, stand aside

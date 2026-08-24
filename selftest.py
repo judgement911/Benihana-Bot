@@ -1659,20 +1659,83 @@ def check_vol_baseline() -> bool:
               f"({e['atr_ratio']:.1f}x > {C.VOL_SPIKE_MULT})")
         ok = False
 
-    # A genuine spike must still be caught: same series, last bar exploded.
-    df2 = df.copy()
-    df2.iloc[-1, df2.columns.get_loc("high")] = float(df2["close"].iloc[-1]) + 60
-    df2.iloc[-1, df2.columns.get_loc("low")] = float(df2["close"].iloc[-1]) - 60
-    if base.snapshot(df2)["atr_ratio"] <= e["atr_ratio"]:
-        print("  x a 40x-range bar did not raise the ratio at all")
+    # A genuine spike must still be caught — tested on an ALL-LIVE window,
+    # which is the only situation where a baseline exists to spike against.
+    # Inside a mostly-frozen window the ratio is deliberately silent; that
+    # trade-off is documented in _live_atr_median and costs the Sunday
+    # reopen hour, where the dealing-cost limit still applies.
+    lidx = pd.date_range("2026-08-19", periods=200, freq="15min", tz="UTC")
+    lc = 4500.0 + rng.normal(0, 1.2, 200).cumsum()
+    ldf = pd.DataFrame({"open": lc, "close": lc, "high": lc + 3.0,
+                        "low": lc - 3.0}, index=lidx)
+    calm = base.snapshot(ldf)["atr_ratio"]
+    if not (0.5 <= calm <= 2.0):
+        print(f"  x a calm all-live window reads {calm:.2f}x")
+        ok = False
+    spiked = ldf.copy()
+    spiked.iloc[-1, spiked.columns.get_loc("high")] = float(lc[-1]) + 120
+    spiked.iloc[-1, spiked.columns.get_loc("low")] = float(lc[-1]) - 120
+    sr = base.snapshot(spiked)["atr_ratio"]
+    if sr <= C.VOL_SPIKE_MULT:
+        print(f"  x a 40x-range bar in a live window reads only {sr:.2f}x — "
+              f"a real news spike would be traded")
         ok = False
 
-    # An all-live window must be unaffected by the filter.
-    plain = df.iloc[n_frozen:]
-    if len(plain) >= 60:
-        r = base.snapshot(plain)["atr_ratio"]
-        if not (0.5 <= r <= 2.0):
-            print(f"  x an ordinary all-live window now reads {r:.2f}x")
+    # THE REOPEN: the entire window is still weekend and the first live bars
+    # arrive. Filtering alone cannot help — with every bar frozen the "busy"
+    # level is frozen too — so the baseline must be abandoned. Without this
+    # the reopen refused 29% of bars at up to 147x.
+    reopen_close = np.concatenate([
+        np.full(95, 4500.0) + rng.normal(0, 0.02, 95).cumsum(),
+        4500.0 + rng.normal(0, 1.2, 8).cumsum()])
+    ridx = pd.date_range("2026-08-23 18:00", periods=len(reopen_close),
+                         freq="15min", tz="UTC")
+    rspan = np.concatenate([np.full(95, 0.05), np.full(8, 3.0)])
+    rdf = pd.DataFrame({"open": reopen_close, "close": reopen_close,
+                        "high": reopen_close + rspan,
+                        "low": reopen_close - rspan}, index=ridx)
+    rr = base.snapshot(rdf)["atr_ratio"]
+    if rr > C.VOL_SPIKE_MULT:
+        print(f"  x the first live bars after a weekend read {rr:.1f}x normal "
+              f"— the reopen is still refused as a news spike")
+        ok = False
+
+    # THE MIXED WINDOW, tested on the real data rather than a fixture.
+    # Monday morning a few hours in: under half the window is frozen, so the
+    # dead-window guard stays quiet by design, and the live bars are still
+    # ramping up from the reopen — which drags a plain median to the bottom
+    # of the live cluster. Several synthetic attempts failed to reproduce
+    # this while the real series does it every week, so the committed
+    # candles are the fixture.
+    import os as _os
+    hist = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                         "data", "xauusd_15min.csv")
+    if _os.path.exists(hist):
+        real = pd.read_csv(hist, parse_dates=["datetime"]).set_index("datetime")
+        if real.index.tz is None:
+            real.index = real.index.tz_localize("UTC")
+        dow, hour = real.index.dayofweek, real.index.hour
+        # Every Monday in the file, not the first few — an early slice
+        # happened to miss the ramp entirely and passed with the filter
+        # removed.
+        mon = np.where((dow == 0) & (hour >= 6) & (hour < 14))[0]
+        mon = mon[mon >= 300]
+        if len(mon) >= 60:
+            ratios = np.array([base.snapshot(real.iloc[i - 300:i + 1])["atr_ratio"]
+                               for i in mon[::max(1, len(mon) // 120)]])
+            refused = float((ratios > C.VOL_SPIKE_MULT).mean())
+            if refused > 0.02:
+                print(f"  x {refused:.1%} of real Monday 06:00-14:00 bars are "
+                      f"refused as a news spike (worst {ratios.max():.1f}x) — "
+                      f"midweek is 0.3%")
+                ok = False
+
+    # ...and a frozen bar must still be far too thin to trade.
+    frozen_only = df.iloc[:n_frozen]
+    if len(frozen_only) >= 60:
+        fr = base.snapshot(frozen_only)
+        if 3.0 * fr["atr"] > 2.0:
+            print(f"  x a frozen-tape bar produced a {3 * fr['atr']:.2f} pt stop")
             ok = False
 
     if ok:

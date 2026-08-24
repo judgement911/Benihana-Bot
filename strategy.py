@@ -72,27 +72,45 @@ def _live_atr_median(a, fallback: float) -> float:
     """What "normal volatility" is, measured over bars where the market was
     actually open.
 
-    A plain median of the last 100 bars breaks every Monday morning. The
-    window then reaches back into the weekend, where gold's 15-minute bars
-    have a range of about a quarter of a point against four points live, so
-    the median lands in the frozen cluster and a perfectly ordinary ATR
-    reads as sixteen times normal. Measured on real history, that made the
-    bot refuse 27% of Monday 06:00-14:00 bars as a "news spike" against 0.1%
-    on a Tuesday.
+    A plain median of the last 100 bars breaks every Monday. The window
+    reaches back into the weekend, where gold's 15-minute bars have a range
+    of about a quarter of a point against four points live, so the median
+    lands in the frozen cluster and an ordinary ATR reads as sixteen times
+    normal. On real history that refused 27% of Monday 06:00-14:00 bars as a
+    "news spike" against 0.1% on a Tuesday.
 
-    A closed market is not a quiet market; it is not a sample of normal at
-    all. So the window's busy level is taken from a high quantile, and bars
-    far below it are dropped before the median. That brings Monday to 0.1%,
-    exactly matching midweek, and leaves midweek untouched — real spikes
-    still register.
+    Two different situations have to be told apart, and the difference is
+    what share of the window is dead rather than how high the current bar is:
+
+      MOSTLY DEAD WINDOW — the weekend, or the first hours after the reopen.
+      There is no recent sample of normal at all, so the honest answer is no
+      opinion: return the current ATR and let the ratio be 1.0.
+
+      LIVE WINDOW WITH A SPIKE — one bar explodes against a real trading
+      baseline. That must still be caught, so the baseline is kept and the
+      ratio rises as it should.
+
+    The cost of the first rule is that a genuine spike inside a
+    mostly-frozen window is not flagged either, which in practice means the
+    Sunday reopen hour. That is accepted: a trade there still has to clear
+    the dealing-cost limit and the ruleset's own conditions, and the
+    alternative — dividing by a frozen number — refused 27% of every Monday
+    morning outright.
     """
     w = a.tail(C.VOL_BASELINE_BARS).dropna()
-    if len(w) < 30:
+    if len(w) < 30 or fallback <= 0:
         return fallback
+
+    # Is this window a sample of the current regime at all? A weekend, or the
+    # first bars after the reopen, is not a quiet market — it is no market,
+    # and no filter rescues it, because when every bar is frozen the window's
+    # own "busy" level is frozen too. Measured against the current bar, more
+    # than half the window being dead means there is no baseline to be had.
+    if float((w < C.VOL_DEAD_SHARE_FRAC * fallback).mean()) > 0.5:
+        return fallback
+
     busy = float(w.quantile(0.90))
     live = w[w >= C.VOL_LIVE_FRACTION * busy] if busy > 0 else w
-    # Below a floor of samples the filter is guessing, so fall back rather
-    # than trust a median of four bars.
     return float(live.median()) if len(live) >= 20 else float(w.median())
 
 

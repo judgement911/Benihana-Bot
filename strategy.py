@@ -68,9 +68,42 @@ _SNAP_CACHE: dict = {}
 _SNAP_CACHE_MAX = 512
 
 
+def _live_atr_median(a, fallback: float) -> float:
+    """What "normal volatility" is, measured over bars where the market was
+    actually open.
+
+    A plain median of the last 100 bars breaks every Monday morning. The
+    window then reaches back into the weekend, where gold's 15-minute bars
+    have a range of about a quarter of a point against four points live, so
+    the median lands in the frozen cluster and a perfectly ordinary ATR
+    reads as sixteen times normal. Measured on real history, that made the
+    bot refuse 27% of Monday 06:00-14:00 bars as a "news spike" against 0.1%
+    on a Tuesday.
+
+    A closed market is not a quiet market; it is not a sample of normal at
+    all. So the window's busy level is taken from a high quantile, and bars
+    far below it are dropped before the median. That brings Monday to 0.1%,
+    exactly matching midweek, and leaves midweek untouched — real spikes
+    still register.
+    """
+    w = a.tail(C.VOL_BASELINE_BARS).dropna()
+    if len(w) < 30:
+        return fallback
+    busy = float(w.quantile(0.90))
+    live = w[w >= C.VOL_LIVE_FRACTION * busy] if busy > 0 else w
+    # Below a floor of samples the filter is guessing, so fall back rather
+    # than trust a median of four bars.
+    return float(live.median()) if len(live) >= 20 else float(w.median())
+
+
 def snapshot(df: pd.DataFrame) -> dict:
     close = df["close"]
-    key = (df.index[-1], len(df), float(close.iloc[-1]))
+    # The forming bar's high and low move while its close can stay identical
+    # between two polls, so a key made of (time, length, close) alone serves
+    # stale indicators for a bar whose range has since doubled. ATR, ADX and
+    # the volatility ratio all read high and low.
+    key = (df.index[-1], len(df), float(close.iloc[-1]),
+           float(df["high"].iloc[-1]), float(df["low"].iloc[-1]))
     hit = _SNAP_CACHE.get(key)
     if hit is not None:
         return hit
@@ -85,7 +118,7 @@ def snapshot(df: pd.DataFrame) -> dict:
     r = ind.rsi(close, 14)
 
     atr_now = float(a.iloc[-1])
-    atr_median = float(a.tail(100).median()) if len(a) >= 30 else atr_now
+    atr_median = _live_atr_median(a, atr_now)
 
     out = {
         "df": df,

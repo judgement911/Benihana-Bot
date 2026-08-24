@@ -172,6 +172,13 @@ RSI_OVERSOLD = 22.0
 PULLBACK_IDEAL = (0.382, 0.618)   # golden pocket of the last impulse leg
 PULLBACK_ACCEPT = (0.20, 0.75)
 
+# How "normal volatility" is measured. See strategy._live_atr_median: the
+# window is filtered to bars where the market was open before the median is
+# taken, because a frozen weekend otherwise drags the baseline down and makes
+# Monday morning look like a permanent news spike.
+VOL_BASELINE_BARS = int(_get("VOL_BASELINE_BARS", "100"))
+VOL_LIVE_FRACTION = float(_get("VOL_LIVE_FRACTION", "0.40"))
+
 VOL_SPIKE_MULT = 2.5      # ATR vs its own median -> news spike, stand aside
 VOL_DEAD_MULT = 0.40      # ATR vs its own median -> dead tape, stand aside
 

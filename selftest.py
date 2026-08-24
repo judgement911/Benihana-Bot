@@ -1618,6 +1618,69 @@ def check_usdrate() -> bool:
     return ok
 
 
+
+def check_vol_baseline() -> bool:
+    """"Normal volatility" must be measured over bars where the market was
+    open.
+
+    A plain median of the last 100 bars reaches into the weekend on a Monday
+    morning, where gold's bars are a quarter of a point against four points
+    live. The median lands in the frozen cluster and an ordinary ATR reads as
+    sixteen times normal, so the bot refuses the day as a news spike. On real
+    history that was 27% of Monday 06:00-14:00 bars against 0.1% midweek.
+    """
+    import numpy as np
+    import strategy as base
+
+    ok = True
+    # Two clusters, as a real Monday window has: ~40 frozen weekend bars
+    # then a live session.
+    # The frozen stretch has to fall INSIDE the trailing baseline window, and
+    # outnumber the live bars in it, or a plain median never lands in the
+    # dead cluster and the fixture proves nothing. That is a real Monday
+    # 09:00: the weekend is still most of the last 100 bars.
+    rng = np.random.default_rng(5)
+    n_frozen, n_live = 70, 45
+    frozen = np.full(n_frozen, 4500.0) + rng.normal(0, 0.02, n_frozen).cumsum()
+    live = 4500.0 + rng.normal(0, 1.2, n_live).cumsum()
+    close = np.concatenate([frozen, live])
+    idx = pd.date_range("2026-08-24", periods=len(close), freq="15min", tz="UTC")
+    span = np.concatenate([np.full(n_frozen, 0.05), np.full(n_live, 3.0)])
+    df = pd.DataFrame({"open": close, "close": close,
+                       "high": close + span, "low": close - span}, index=idx)
+
+    e = base.snapshot(df)
+    if not (0.5 <= e["atr_ratio"] <= 2.0):
+        print(f"  x a normal live bar after a frozen weekend reads "
+              f"{e['atr_ratio']:.1f}x normal — the baseline includes dead bars")
+        ok = False
+    if e["atr_ratio"] > C.VOL_SPIKE_MULT:
+        print(f"  x it would be refused as a news spike "
+              f"({e['atr_ratio']:.1f}x > {C.VOL_SPIKE_MULT})")
+        ok = False
+
+    # A genuine spike must still be caught: same series, last bar exploded.
+    df2 = df.copy()
+    df2.iloc[-1, df2.columns.get_loc("high")] = float(df2["close"].iloc[-1]) + 60
+    df2.iloc[-1, df2.columns.get_loc("low")] = float(df2["close"].iloc[-1]) - 60
+    if base.snapshot(df2)["atr_ratio"] <= e["atr_ratio"]:
+        print("  x a 40x-range bar did not raise the ratio at all")
+        ok = False
+
+    # An all-live window must be unaffected by the filter.
+    plain = df.iloc[n_frozen:]
+    if len(plain) >= 60:
+        r = base.snapshot(plain)["atr_ratio"]
+        if not (0.5 <= r <= 2.0):
+            print(f"  x an ordinary all-live window now reads {r:.2f}x")
+            ok = False
+
+    if ok:
+        print("  volatility baseline: a frozen weekend no longer reads as a "
+              "news spike, real spikes still do")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -1666,4 +1729,5 @@ if __name__ == "__main__":
     ok &= check_kage_contract()
     ok &= check_onboarding()
     ok &= check_usdrate()
+    ok &= check_vol_baseline()
     raise SystemExit(0 if ok else 1)

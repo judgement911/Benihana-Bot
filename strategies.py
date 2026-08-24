@@ -90,7 +90,7 @@ def _common_vetoes(e: dict, t: dict, b: dict, spec, now_utc, entry_df) -> list:
 def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
               e, entry_df, highs, lows, atr_e, spec, inst, balance, risk_pct,
               risk_usd, now_utc, in_session, short_history,
-              adx_trend=None) -> dict:
+              adx_trend=None, sl_band=None) -> dict:
     """Everything downstream of 'which way and how strongly'.
 
     Levels, order type, confidence and probability are strategy-independent:
@@ -110,7 +110,7 @@ def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
         return base._build_levels(px, direction=direction, highs=highs, lows=lows,
                                   atr_e=atr_e, spec=spec, inst=inst,
                                   balance=balance, risk_pct=risk_pct,
-                                  risk_usd=risk_usd)
+                                  risk_usd=risk_usd, sl_band=sl_band)
 
     out["levels"], room_rr, _ = build(float(e["close"]))
 

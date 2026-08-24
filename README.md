@@ -13,7 +13,7 @@ with a stop, targets, position size, and the odds it puts on them.
 
 🤡 TP1 4,691.04 · 1R · 21.6 pts · 62%
 🥵 TP2 4,712.59 · 2R · 43.1 pts · 40%
-💀 TP3 4,734.14 · 3R · 64.7 pts · 40%
+💀 TP3 4,734.14 · 3R · 64.7 pts · 36%
 
 💰 300K IDR risk · 1:3 R:
 ⚠️ Below the 0.01 lot minimum — this risk is too small to trade here.

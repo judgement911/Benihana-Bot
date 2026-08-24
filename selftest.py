@@ -791,6 +791,75 @@ def _inspect_bodies(bodies, label, failures) -> bool:
     return ok
 
 
+def check_resolve_robustness() -> bool:
+    """One malformed row must not stop every other signal from settling.
+
+    resolve() indexed r["entry_tf"] directly. A record written by an older
+    version of the bot does not have it, and journal.json survives every
+    deploy — so one stale row threw before anything was settled. Every
+    caller catches and logs that exception, which means the user saw no
+    error at all: /stats, /daily, /history and /update simply stayed empty
+    for good.
+    """
+    from datetime import datetime, timedelta, timezone
+    import journal as J
+
+    rows = J._load()
+    before = len(rows)
+    now = datetime.now(timezone.utc)
+    base_row = {
+        "user_id": 90910, "instrument": "xauusd", "mode": "scalp",
+        "entry_tf": "5min", "strategy": "kage", "direction": 1,
+        "entry": 4500.0, "stop": 4490.0, "tps": [4510.0, 4520.0, 4530.0],
+        "tps_hit": [], "hit_tp1": False, "state": J.ACTIVE,
+        "outcome": J.OPEN, "risk_cash": 50.0,
+        "ts": (now - timedelta(hours=3)).isoformat(),
+    }
+    good = {**base_row, "id": "rb_good"}
+    legacy = {**base_row, "id": "rb_legacy"}
+    legacy.pop("entry_tf")                       # recoverable from mode
+    broken = {**base_row, "id": "rb_broken"}
+    broken.pop("entry_tf")
+    broken.pop("mode")                           # not recoverable, must skip
+    J._save(rows + [good, legacy, broken])
+
+    idx = pd.date_range(now - timedelta(hours=3), periods=60, freq="5min",
+                        tz="UTC")
+    c = np.linspace(4500.0, 4535.0, 60)
+    frame = pd.DataFrame({"open": c, "high": c + 2, "low": c - 2, "close": c},
+                         index=idx)
+
+    ok = True
+    try:
+        out = J.resolve(lambda *a, **k: frame)
+    except Exception as exc:                      # noqa: BLE001
+        print(f"  x one malformed record killed the whole resolve pass: "
+              f"{type(exc).__name__}: {exc}")
+        J._save([r for r in J._load() if r.get("user_id") != 90910])
+        return False
+
+    settled = {r["id"]: r for r in J._load() if r.get("user_id") == 90910}
+    if settled["rb_good"].get("r") is None:
+        print("  x a well-formed signal did not settle")
+        ok = False
+    if settled["rb_legacy"].get("r") is None:
+        print("  x a record missing entry_tf was not recovered from its mode")
+        ok = False
+    if out.get("skipped") != 1:
+        print(f"  x expected 1 unrecoverable record skipped, got "
+              f"{out.get('skipped')}")
+        ok = False
+
+    J._save([r for r in J._load() if r.get("user_id") != 90910])
+    if len(J._load()) != before:
+        print("  x the test left rows behind")
+        ok = False
+    if ok:
+        print("  resolve: a malformed record is skipped, everything else "
+              "still settles")
+    return ok
+
+
 def check_commands() -> bool:
     """Drive every offline command through the real dispatcher.
 
@@ -1818,6 +1887,7 @@ if __name__ == "__main__":
 
     print("\nSignal journal:")
     ok &= check_journal()
+    ok &= check_resolve_robustness()
 
     print("\nCommands:")
     ok &= check_commands()

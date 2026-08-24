@@ -201,14 +201,28 @@ def resolve(fetch, now: datetime = None) -> dict:
     """
     now = now or datetime.now(timezone.utc)
     rows = _load()
-    todo = [r for r in rows if r["outcome"] == OPEN]
+    todo = [r for r in rows if r.get("outcome") == OPEN]
     if not todo:
-        return {"checked": 0, "resolved": 0, "expired": 0}
+        return {"checked": 0, "resolved": 0, "expired": 0, "skipped": 0}
 
     resolved = expired = 0
+    skipped = 0
     by_symbol: dict[tuple, list] = {}
     for r in todo:
-        by_symbol.setdefault((r["instrument"], r["entry_tf"]), []).append(r)
+        # A record written by an older version can be missing a field this
+        # function needs. Indexing it directly threw before anything was
+        # settled, and every caller catches the exception and logs it — so
+        # one stale row silently froze /stats, /daily, /history and /update
+        # for good, with no error shown to anyone. Skip the row instead.
+        inst_key = r.get("instrument")
+        tf = r.get("entry_tf")
+        if not tf:
+            spec = C.MODES.get(r.get("mode") or "")
+            tf = spec.entry_tf if spec else None
+        if not inst_key or not tf:
+            skipped += 1
+            continue
+        by_symbol.setdefault((inst_key, tf), []).append(r)
 
     for (key, tf), group in by_symbol.items():
         inst = I.BY_KEY.get(key)
@@ -240,7 +254,11 @@ def resolve(fetch, now: datetime = None) -> dict:
                 resolved += 1
 
     _save(rows)
-    return {"checked": len(todo), "resolved": resolved, "expired": expired}
+    if skipped:
+        print(f"journal.resolve: skipped {skipped} record(s) missing an "
+              f"instrument or timeframe")
+    return {"checked": len(todo), "resolved": resolved, "expired": expired,
+            "skipped": skipped}
 
 
 # --------------------------------------------------------------------------- #

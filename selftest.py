@@ -1265,6 +1265,172 @@ def check_management_lifecycle() -> bool:
     return ok
 
 
+
+def check_cost_veto() -> bool:
+    """No ruleset may issue a trade whose spread eats more than MAX_COST_R of
+    its own risk.
+
+    The recorded backtests contain trades paying 2.14 R in spread alone to
+    open — a 214% edge just to break even. They come from a frozen tape,
+    where ATR collapses and the stop shrinks with it. The existing dead-tape
+    veto misses them because it is relative: over a long freeze the rolling
+    median ATR falls too, so the ratio reads normal.
+
+    Every ruleset is checked, because Ronin has its own evaluate() rather
+    than calling the shared one, and a guard added in only one place left
+    the default strategy uncovered.
+    """
+    import instruments as I
+    import strategies as S
+    from indicators import resample_ohlc
+
+    base = synth(kind="uptrend", n=6000)
+    base = base / base["close"].iloc[0] * 4500.0
+    spec = C.MODES["intraday"]
+    e = base
+    t = resample_ohlc(base, "1h")
+    b = resample_ohlc(base, "4h")
+    inst = I.BY_KEY["xauusd"]
+
+    real = I.Instrument.cost_r
+    ok, checked = True, 0
+    try:
+        for key in S.ORDER:
+            if key == "auto":
+                continue
+            for forced, should_veto in ((C.MAX_COST_R * 0.5, False),
+                                        (C.MAX_COST_R * 1.5, True)):
+                I.Instrument.cost_r = lambda self, d, _f=forced: _f
+                plans = vetoed = 0
+                for i in range(400, len(e), 97):
+                    now = e.index[i]
+                    r = S.REGISTRY[key].evaluate(
+                        e.iloc[:i + 1], t[t.index <= now], b[b.index <= now],
+                        spec, now.to_pydatetime(), instrument=inst)
+                    if not r.get("levels"):
+                        continue
+                    plans += 1
+                    hit = any("Spread alone" in v for v in (r.get("vetoes") or []))
+                    if hit:
+                        vetoed += 1
+                        if r["decision"] != "NO TRADE":
+                            print(f"  x {key}: cost veto raised but decision "
+                                  f"stayed {r['decision']}")
+                            ok = False
+                if not plans:
+                    continue
+                checked += plans
+                if should_veto and vetoed != plans:
+                    print(f"  x {key}: only {vetoed}/{plans} plans refused at "
+                          f"cost {forced:.0%}, above the {C.MAX_COST_R:.0%} limit")
+                    ok = False
+                if not should_veto and vetoed:
+                    print(f"  x {key}: {vetoed} plans refused at cost "
+                          f"{forced:.0%}, below the limit")
+                    ok = False
+    finally:
+        I.Instrument.cost_r = real
+
+    if ok:
+        print(f"  cost veto: {checked} plans across every ruleset, refused "
+              f"above {C.MAX_COST_R:.0%} of risk and allowed below")
+    return ok
+
+
+
+def check_kage_contract() -> bool:
+    """Kage's edge lives in three things the live machinery could quietly
+    undo, so each is asserted rather than assumed.
+
+    The stop must be 3 ATR. Cost in R is spread over stop distance, and
+    scalp's own band caps stops at 1.6 ATR, which leaves the same gross edge
+    netting +0.053 instead of +0.115. The clock must be honoured, because
+    the edge is flat from 12 bars to 36 and gone by 6. And it must refuse to
+    trade outside London and New York, where a retail gold spread is several
+    times its daytime figure and where this rule would otherwise hand back a
+    third of its profit.
+    """
+    import contextlib
+    import io
+    import instruments as I
+    import strategies as S
+    from indicators import resample_ohlc
+
+    base = synth(kind="uptrend", n=4000)
+    base = base / base["close"].iloc[0] * 4500.0
+    spec = C.MODES["scalp"]
+    ok = True
+
+    def run_at(ts, force_break=False):
+        e = base.copy()
+        # Re-stamp the history so the last bar lands on the wanted timestamp,
+        # keeping the 5-minute spacing the mode expects.
+        e.index = pd.date_range(end=ts, periods=len(e), freq="5min", tz="UTC")
+        if force_break:
+            # Drive the final bar well clear of yesterday's high so the rule
+            # certainly triggers. Without this the fixture may simply never
+            # break a level, and every assertion below would be skipped
+            # rather than checked — which is exactly how an earlier version
+            # of this test passed while the stop band was clamping.
+            yday = e.index.normalize()[-1] - pd.Timedelta(days=1)
+            prior = e[e.index.normalize() == yday]
+            top = float(prior["high"].max()) if len(prior) else float(e["high"].max())
+            lift = top + 40.0
+            e.iloc[-1, e.columns.get_loc("low")] = top - 1.0
+            e.iloc[-1, e.columns.get_loc("close")] = lift
+            e.iloc[-1, e.columns.get_loc("high")] = lift + 1.0
+        t = resample_ohlc(e, "15min")
+        b = resample_ohlc(e, "1h")
+        with contextlib.redirect_stdout(io.StringIO()):
+            return S.REGISTRY["kage"].evaluate(
+                e, t, b, spec, ts.to_pydatetime(), instrument=I.BY_KEY["xauusd"])
+
+    # A Wednesday inside the window, and the same bar outside it.
+    inside = pd.Timestamp("2026-08-19 13:00", tz="UTC")
+    outside = pd.Timestamp("2026-08-19 22:00", tz="UTC")
+    weekend = pd.Timestamp("2026-08-22 13:00", tz="UTC")     # Saturday
+
+    r_out = run_at(outside, force_break=True)
+    if r_out.get("decision") != "NO TRADE":
+        print("  x traded at 22:00 UTC, outside the thin-spread window")
+        ok = False
+    if not any("outside" in v for v in (r_out.get("vetoes") or [])):
+        print("  x no veto explaining the out-of-hours refusal")
+        ok = False
+
+    r_we = run_at(weekend, force_break=True)
+    if r_we.get("decision") != "NO TRADE":
+        print("  x traded on a Saturday")
+        ok = False
+
+    r_in = run_at(inside, force_break=True)
+    lv = r_in.get("levels")
+    if not lv:
+        print("  x the forced break produced no levels — the fixture no longer "
+              "exercises the rule, so nothing below is actually being tested")
+        ok = False
+    else:
+        want = C.KAGE_STOP_ATR
+        if abs((lv.get("stop_atr") or 0) - want) > 0.05:
+            print(f"  x stop is {lv.get('stop_atr')}x ATR, not the {want}x the "
+                  f"rule was measured with (the mode band clamped it)")
+            ok = False
+        if r_in.get("time_exit_bars") != C.KAGE_HOLD:
+            print(f"  x clock is {r_in.get('time_exit_bars')}, not {C.KAGE_HOLD}")
+            ok = False
+
+    # Scalp needs 48h of history for a complete prior day.
+    if C.MODES["scalp"].bars < 576:
+        print(f"  x scalp requests {C.MODES['scalp'].bars} bars — under 576 the "
+              f"prior day arrives truncated and PDH/PDL are wrong")
+        ok = False
+
+    if ok:
+        print(f"  kage: {C.KAGE_STOP_ATR}x ATR stop survives the mode band, "
+              f"{C.KAGE_HOLD}-bar clock set, refuses nights and weekends")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -1309,4 +1475,6 @@ if __name__ == "__main__":
     ok &= check_news()
     ok &= check_subscriptions()
     ok &= check_management_lifecycle()
+    ok &= check_cost_veto()
+    ok &= check_kage_contract()
     raise SystemExit(0 if ok else 1)

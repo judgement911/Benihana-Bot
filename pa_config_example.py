@@ -34,3 +34,24 @@ OANDA_ENV = "practice"
 ACCOUNT_BALANCE = "5000"
 RISK_PCT = "1.0"
 CONTRACT_SIZE = "100"
+
+# --------------------------------------------------------------------- ACCESS
+# Subscriptions. Leave OFF ("0") and the bot behaves exactly as before:
+# whoever is in ALLOWED_USER_IDS can use it, nobody else.
+#
+# Set to "1" and the rules change:
+#   - anyone in OWNER_IDS gets in, always, and never expires
+#   - everyone else needs unexpired days, given with /grant
+#   - everyone else is refused, and told their own ID so they can ask you
+SUBSCRIPTIONS_ENABLED = "0"
+
+# Your own Telegram ID (send /whoami to the bot). Comma-separate for several.
+# If you leave this blank it falls back to ALLOWED_USER_IDS, so you cannot
+# accidentally lock yourself out of your own bot.
+OWNER_IDS = ""
+
+# The most a single trade may pay in spread, as a share of its own risk.
+# 0.20 means "refuse anything where the spread is more than a fifth of the
+# stop". Guards against signalling on a dead or frozen market, where the
+# stop collapses and the spread becomes most of the trade.
+MAX_COST_R = "0.20"

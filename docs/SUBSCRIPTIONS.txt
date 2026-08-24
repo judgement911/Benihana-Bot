@@ -1,0 +1,275 @@
+========================================================================
+BENIHANA BOT - HOW SUBSCRIPTIONS WORK
+A simple guide for the owner
+========================================================================
+
+
+WHAT IT DOES, IN ONE PARAGRAPH
+------------------------------
+
+Right now your bot is private: only the Telegram IDs you listed can use
+it. Subscriptions change that rule. Instead of "is this person on my
+list?", the bot asks "does this person have days left?". You give
+someone 30 days, they use the bot for 30 days, then it stops letting
+them in until you give them more. You are the owner, so you never
+expire and you are never charged.
+
+The bot handles ACCESS only. It does NOT take money. You collect
+payment however you like - bank transfer, QRIS, cash - and then type
+one command to switch the person on. That is deliberate: it means you
+can change how you get paid without touching the bot.
+
+
+========================================================================
+PART 1 - TURNING IT ON  (do this once)
+========================================================================
+
+STEP 1. Find your own Telegram ID.
+
+  Open your bot in Telegram and send:
+
+      /whoami
+
+  It replies with a number, something like 123456789.
+  That number is you. Write it down.
+
+
+STEP 2. Edit your settings file on PythonAnywhere.
+
+  - Go to pythonanywhere.com and log in
+  - Click the "Files" tab
+  - Open the file called:  pa_config.py
+  - Scroll to the bottom and make sure these two lines are there,
+    with YOUR number:
+
+      SUBSCRIPTIONS_ENABLED = "1"
+      OWNER_IDS = "123456789"
+
+  If those lines are not in the file yet, just type them at the
+  bottom. Then click the green "Save" button.
+
+  IMPORTANT: keep the quote marks. "1" not 1.
+
+
+STEP 3. Restart the bot.
+
+  - Click the "Web" tab
+  - Click the big green "Reload" button
+  - Wait for it to finish
+
+  Done. Subscriptions are now live.
+
+
+STEP 4. Check it worked.
+
+  Send this to your bot:
+
+      /subscription
+
+  You should see:  "Owner - unlimited, never expires."
+
+  If you instead see "Subscription required", stop. Your OWNER_IDS
+  number is wrong or was not saved. Go back to Step 2.
+
+
+========================================================================
+PART 2 - THE FOUR COMMANDS YOU WILL USE
+========================================================================
+
+These three only work for you, the owner. Nobody else can run them.
+
+
+  /grant <their id> <days>
+  ------------------------
+  Give someone access.
+
+      /grant 987654321 30
+
+  That gives user 987654321 thirty days. The bot replies with the
+  exact date and time their access ends.
+
+  You can add a label if you want to remember what they paid for:
+
+      /grant 987654321 30 monthly
+      /grant 987654321 7 trial
+
+
+  /revoke <their id>
+  ------------------
+  Cut someone off immediately.
+
+      /revoke 987654321
+
+  They lose access the second you send it. Use this for refunds or
+  if someone is sharing their access.
+
+
+  /subs
+  -----
+  See everyone.
+
+      /subs
+
+  Shows a list: who is active (green dot), who has lapsed (white
+  dot), and how many days each person has left. Sorted so the ones
+  expiring soonest are at the top - that is your "who to chase"
+  list.
+
+
+And this one works for EVERYBODY, including people with no access:
+
+
+  /subscription
+  -------------
+  Shows the person their own status - active until when, how many
+  days left, or "no active subscription" plus their own ID.
+
+
+========================================================================
+PART 3 - WHAT YOUR CUSTOMER EXPERIENCES
+========================================================================
+
+1. They find your bot and send /start or any command.
+
+2. The bot refuses them, and shows them their own ID number:
+
+       Subscription required
+       This bot is private. Send your ID to the owner
+       to get access:  987654321
+
+3. They send you that number (WhatsApp, Instagram, wherever) and
+   pay you.
+
+4. You type:  /grant 987654321 30
+
+5. They can now use the bot. Everything works normally for them.
+
+6. When it gets close to running out, /subscription warns them:
+   "Your access ends in 3.4 days."
+
+7. When it runs out, they are refused again and see the same
+   message with their ID. They pay again, you grant again.
+
+
+========================================================================
+PART 4 - GETTING PAID
+========================================================================
+
+The bot does not touch money. Pick whichever suits you:
+
+  MANUAL (recommended to start)
+      They transfer to your bank / QRIS / e-wallet, send you a
+      screenshot, you run /grant. Zero setup, zero fees beyond
+      your bank's, and you can start today.
+
+  TELEGRAM STARS (later, if you get busy)
+      Telegram's built-in payment for digital things. It would
+      need extra code adding to the bot. Only worth it once
+      granting by hand becomes annoying - realistically past
+      20 or 30 customers.
+
+Manual is genuinely fine at small scale. Do not build payment
+plumbing you do not need yet.
+
+
+========================================================================
+PART 5 - THINGS WORTH KNOWING
+========================================================================
+
+RENEWING EARLY DOES NOT LOSE THEM DAYS.
+  If someone has 5 days left and pays for another 30, run
+  /grant <id> 30 and they end up with 35, not 30. The bot adds
+  time, it never overwrites. Nobody is punished for paying early.
+
+YOU CANNOT LOCK YOURSELF OUT.
+  Your access comes from the settings file, not from the
+  subscriber list. Even if the subscriber file gets deleted or
+  corrupted, you still get in and strangers still do not.
+
+EXPIRY IS AUTOMATIC.
+  There is no cleanup job to run. A subscription simply stops
+  counting the moment its date passes. Nothing can accidentally
+  extend someone.
+
+TURNING IT BACK OFF.
+  Set SUBSCRIPTIONS_ENABLED = "0" and Reload. The bot goes back to
+  the old behaviour - only ALLOWED_USER_IDS gets in. Your
+  subscriber list is kept, so switching back on restores everyone.
+
+WHERE THE DATA LIVES.
+  A file called subscriptions.json next to the bot on
+  PythonAnywhere. It is deliberately NOT on GitHub - your customer
+  list is nobody else's business. Back it up occasionally by
+  downloading it from the Files tab.
+
+
+========================================================================
+PART 6 - THE REAL LIMIT, AND IT IS NOT THE CODE
+========================================================================
+
+Read this before you sell anything.
+
+Your free accounts have hard ceilings that customers share:
+
+  TWELVE DATA (price feed):  800 requests per day, TOTAL, across
+      every user combined. One /signal is a few requests. One
+      /scan is about 30. Three active people can finish the daily
+      quota before lunch.
+
+  PYTHONANYWHERE (hosting):  roughly 100 seconds of CPU per day
+      on the free plan. Every signal costs real CPU.
+
+So the code will happily handle 50 subscribers. Your data plan
+will not handle 5.
+
+Before you take money from anybody:
+
+  1. Upgrade PythonAnywhere to the paid tier (about $5/month)
+  2. Upgrade or replace the Twelve Data plan
+
+Otherwise your paying customers will get "no data" errors and you
+will be refunding them. Charge only what covers those costs plus
+your margin, and work out your price per user AFTER you know the
+data bill.
+
+
+========================================================================
+PART 7 - IF SOMETHING GOES WRONG
+========================================================================
+
+"That command is for the owner only" when YOU run /grant
+      Your OWNER_IDS does not match your real Telegram ID. Send
+      /whoami, compare the number, fix pa_config.py, Reload.
+
+Nothing changed after editing pa_config.py
+      You did not Reload. Web tab, green Reload button.
+
+Everyone is locked out including you
+      Set SUBSCRIPTIONS_ENABLED = "0", Reload, and you are back
+      to normal. Then fix OWNER_IDS and try again.
+
+Someone says they paid but cannot get in
+      Ask them to send /subscription and read you the exact ID.
+      A single wrong digit in your /grant sends the days to a
+      user who does not exist.
+
+You granted the wrong person
+      /revoke <wrong id>  then  /grant <right id> <days>
+
+
+========================================================================
+QUICK REFERENCE
+========================================================================
+
+  Turn on      pa_config.py:  SUBSCRIPTIONS_ENABLED = "1"
+                              OWNER_IDS = "your id"
+               then Web tab -> Reload
+
+  Give 30 days     /grant 987654321 30
+  Give a week      /grant 987654321 7 trial
+  Cut off          /revoke 987654321
+  See everyone     /subs
+  Your own status  /subscription
+  Find an ID       /whoami   (they send this, not you)
+
+========================================================================

@@ -45,7 +45,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-import pandas as pd
 
 import config as C
 import indicators as ind
@@ -90,7 +89,7 @@ def _common_vetoes(e: dict, t: dict, b: dict, spec, now_utc, entry_df) -> list:
 def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
               e, entry_df, highs, lows, atr_e, spec, inst, balance, risk_pct,
               risk_usd, now_utc, in_session, short_history,
-              adx_trend=None) -> dict:
+              adx_trend=None, sl_band=None) -> dict:
     """Everything downstream of 'which way and how strongly'.
 
     Levels, order type, confidence and probability are strategy-independent:
@@ -110,7 +109,7 @@ def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
         return base._build_levels(px, direction=direction, highs=highs, lows=lows,
                                   atr_e=atr_e, spec=spec, inst=inst,
                                   balance=balance, risk_pct=risk_pct,
-                                  risk_usd=risk_usd)
+                                  risk_usd=risk_usd, sl_band=sl_band)
 
     out["levels"], room_rr, _ = build(float(e["close"]))
 
@@ -125,6 +124,19 @@ def _finalise(out: dict, *, direction, reasons, missing, trigger_present,
         out["decision"] = "WAIT"
     else:
         out["decision"] = "NO TRADE"
+
+    # However good the setup looks, a trade whose spread eats a fifth of its
+    # own risk is not worth taking: it needs a 20% edge just to break even.
+    # This is checked in price units rather than as a volatility ratio,
+    # because the case it exists for — a frozen tape over a weekend — drags
+    # the rolling median down with it and hides from any relative test.
+    cost_r = inst.cost_r(out["levels"]["risk_points"])
+    if cost_r is not None and cost_r > C.MAX_COST_R:
+        out["decision"] = "NO TRADE"
+        out["vetoes"] = list(out.get("vetoes") or []) + [
+            f"Spread alone costs {cost_r:.0%} of the risk on a "
+            f"{out['levels']['risk_display']} stop — market too thin to trade"
+        ]
 
     out["order"] = base._order_plan(out["decision"], direction, float(e["close"]),
                                     e, entry_df, spec, atr_e, inst)
@@ -297,42 +309,99 @@ def evaluate_crimson(entry_df, trend_df, bias_df, spec, now_utc=None,
 def evaluate_kage(entry_df, trend_df, bias_df, spec, now_utc=None,
                   balance=None, risk_pct=None, instrument=None,
                   risk_usd=None) -> dict:
-    """Trade the moment a quiet market stops being quiet.
+    """Take the break of yesterday's extreme, once price has committed to it.
 
-    Bollinger width has to be near the bottom of its own recent range — an
-    actual squeeze, measured as a percentile of the last N readings — and the
-    signal is the first close outside the band. With no squeeze there is no
-    setup, and this ruleset says so rather than finding something to trade.
+    Everyone can see the prior day's high and low, which is the whole
+    argument for the level mattering. What the measurement adds is that the
+    TOUCH is worthless and the DISTANCE is everything: fading a touch of the
+    level loses money in all four quarters, and breaking it by nothing earns
+    +0.015 R, while breaking it by 1.5 ATR and closing there earns +0.115.
+
+    Three conditions exist purely to stop the rule trading where it cannot
+    win rather than to find more trades. It sits out the 21:00-23:00
+    rollover, where a retail gold spread is four times its London figure and
+    where this rule happens to make a third of its gross profit. It requires
+    yesterday to be a real day, because a frozen Saturday has a range of a
+    third of a point and its "high" is not a level. And it asks for a stop
+    three ATR wide, because cost in R is spread over stop distance, and the
+    scalp band's 1.6 ATR ceiling doubles the dealing cost of an edge that is
+    otherwise identical.
+
+    Measured on 119,981 bars of 5min gold, priced with a session-varying
+    spread rather than a flat one: +0.115 R per trade, t +2.57, positive in
+    all four quarters, 6.6 trades a week. On 15min: +0.083 R, t +1.90.
     """
     out, e, t, b, inst, balance, risk_pct, now_utc = _scaffold(
         entry_df, trend_df, bias_df, spec, now_utc, balance, risk_pct,
         instrument, risk_usd, "kage")
 
     vetoes = _common_vetoes(e, t, b, spec, now_utc, entry_df)
+    atr_e = float(e["atr"])
 
-    bb = ind.bollinger(entry_df["close"], C.KAGE_BB_PERIOD, C.KAGE_BB_K)
-    width = bb["width"]
-    hist = width.tail(C.KAGE_SQUEEZE_LOOKBACK).dropna()
-    if len(hist) < C.KAGE_SQUEEZE_LOOKBACK // 2 or pd.isna(width.iloc[-1]):
-        out["vetoes"] = vetoes + ["Not enough history to measure a squeeze"]
+    # ---- yesterday's extremes, from completed days only -------------------
+    idx = entry_df.index
+    days = idx.normalize()
+    today = days[-1]
+    prior = days[days < today]
+    if len(prior) == 0:
+        out["vetoes"] = vetoes + ["No completed prior day in the history yet"]
+        return out
+    yday = prior[-1]
+    pmask = days == yday
+    pd_high = float(entry_df["high"][pmask].max())
+    pd_low = float(entry_df["low"][pmask].min())
+
+    # A day that is barely present is not a day. Expected bars per session
+    # comes from the timeframe, so this works on 5min and 15min alike.
+    tf_sec = base.TF_SECONDS.get(spec.entry_tf, 900)
+    expected = max(1, int(86400 / tf_sec))
+    seen = int(pmask.sum())
+    if seen < expected * C.KAGE_MIN_PRIOR_FRACTION:
+        out["vetoes"] = vetoes + [
+            f"Yesterday is only {seen}/{expected} bars present — its high and "
+            f"low are not a level yet"]
+        return out
+    if (pd_high - pd_low) < atr_e:
+        out["vetoes"] = vetoes + [
+            f"Yesterday's whole range was {pd_high - pd_low:.2f} — a frozen "
+            f"tape, not a level"]
         return out
 
-    now_w = float(width.iloc[-1])
-    pctile = float((hist <= now_w).mean())      # 0 = tightest in the window
-    squeezed = pctile <= C.KAGE_SQUEEZE_PCTILE
-    if not squeezed:
-        vetoes.append(f"No squeeze — band width is at the {pctile:.0%} mark, "
-                      f"needs {C.KAGE_SQUEEZE_PCTILE:.0%} or tighter")
+    # ---- only where the spread is thin ------------------------------------
+    h0, h1 = C.KAGE_HOURS_UTC
+    cheap_hour = h0 <= now_utc.hour < h1
+    weekday = now_utc.weekday() < 5
+    if not (cheap_hour and weekday):
+        vetoes.append(
+            f"{now_utc:%H:%M} UTC — outside {h0:02d}:00-{h1:02d}:00 weekdays, "
+            f"where the gold spread is several times its London figure")
+
+    # ---- the break --------------------------------------------------------
+    k = C.KAGE_BUFFER_ATR
+    up_trigger = pd_high + k * atr_e
+    dn_trigger = pd_low - k * atr_e
+    close = float(e["close"])
+    # snapshot() carries indicators, not the raw bar, so the current bar's
+    # extremes come from the frame itself.
+    hi = float(entry_df["high"].iloc[-1])
+    lo = float(entry_df["low"].iloc[-1])
+
+    # Crossed it on this bar AND closed beyond it. A close alone would fire
+    # on every bar of a trend that is already past the level.
+    broke_up = lo < up_trigger and close > up_trigger
+    broke_dn = hi > dn_trigger and close < dn_trigger
+    broke = broke_up or broke_dn
+    if not broke:
+        near = min(abs(close - up_trigger), abs(close - dn_trigger)) / max(atr_e, 1e-9)
+        vetoes.append(
+            f"No break — closest extension is {near:.1f} ATR away "
+            f"(needs a close {k:g} ATR clear of {pd_high:.2f} / {pd_low:.2f})")
     if vetoes:
         out["vetoes"] = vetoes
         return out
 
-    close = float(e["close"])
-    up, lo = float(bb["upper"].iloc[-1]), float(bb["lower"].iloc[-1])
-    broke_up, broke_dn = close > up, close < lo
-    bias_dir, _ = base._bias_direction(b)
-    direction = LONG if broke_up else SHORT if broke_dn else (bias_dir or LONG)
-
+    direction = LONG if broke_up else SHORT
+    trigger = up_trigger if broke_up else dn_trigger
     reasons, missing = [], []
 
     def add(key, ok, points, mx, text):
@@ -341,43 +410,52 @@ def evaluate_kage(entry_df, trend_df, bias_df, spec, now_utc=None,
         if not ok:
             missing.append(text)
 
-    add("squeeze", True,
-        C.KAGE_WEIGHTS["squeeze"] * (1.0 - pctile / max(C.KAGE_SQUEEZE_PCTILE, 1e-9)
-                                     * 0.4),
-        C.KAGE_WEIGHTS["squeeze"],
-        f"band width at the {pctile:.0%} mark — squeezed")
+    add("break", True, C.KAGE_WEIGHTS["break"], C.KAGE_WEIGHTS["break"],
+        f"closed {k:g} ATR clear of yesterday's "
+        f"{'high' if broke_up else 'low'} ({pd_high if broke_up else pd_low:.2f})")
 
-    broke = broke_up or broke_dn
-    add("expansion", broke, C.KAGE_WEIGHTS["expansion"] if broke else 0,
-        C.KAGE_WEIGHTS["expansion"],
-        "closed outside the band" if broke else "still inside the band — no break yet")
+    # How far past the trigger it actually closed, capped at one extra ATR.
+    beyond = abs(close - trigger) / max(atr_e, 1e-9)
+    strong = beyond >= 0.15
+    add("commitment", strong,
+        C.KAGE_WEIGHTS["commitment"] * min(1.0, 0.4 + beyond),
+        C.KAGE_WEIGHTS["commitment"],
+        f"closed {beyond:.2f} ATR beyond the trigger" if strong
+        else f"only {beyond:.2f} ATR beyond the trigger — a marginal break")
 
-    agrees = bias_dir == FLAT or direction == bias_dir
-    add("bias_agree", agrees, C.KAGE_WEIGHTS["bias_agree"] if agrees else 0,
-        C.KAGE_WEIGHTS["bias_agree"],
-        "break agrees with the higher timeframe" if agrees
-        else "break fights the higher timeframe")
+    # A day that already spent the session parked against its own extreme
+    # has no level left to break.
+    span = (pd_high - pd_low) / max(atr_e, 1e-9)
+    clean = span >= 3.0
+    add("clean_level", clean, C.KAGE_WEIGHTS["clean_level"] if clean else 0,
+        C.KAGE_WEIGHTS["clean_level"],
+        f"yesterday spanned {span:.1f} ATR — a level worth breaking" if clean
+        else f"yesterday spanned only {span:.1f} ATR — too narrow to mean much")
 
-    rsi_now = float(e["rsi"].iloc[-1])
-    not_extreme = C.RSI_OVERSOLD < rsi_now < C.RSI_OVERBOUGHT
-    add("rsi_room", not_extreme, C.KAGE_WEIGHTS["rsi_room"] if not_extreme else 0,
-        C.KAGE_WEIGHTS["rsi_room"],
-        f"RSI {rsi_now:.0f} has room" if not_extreme
-        else f"RSI {rsi_now:.0f} already extreme")
+    room_ok = 0.7 <= (e["atr_ratio"] or 1.0) <= 1.8
+    add("room", room_ok, C.KAGE_WEIGHTS["room"] if room_ok else 0,
+        C.KAGE_WEIGHTS["room"],
+        "volatility inside its normal band" if room_ok
+        else f"ATR {e['atr_ratio']:.2f}x normal")
 
-    in_sess = base._in_session(now_utc, spec)
-    add("session", in_sess, C.KAGE_WEIGHTS["session"] if in_sess else 0,
-        C.KAGE_WEIGHTS["session"],
-        "inside session" if in_sess else "outside session window")
+    add("session", True, C.KAGE_WEIGHTS["session"], C.KAGE_WEIGHTS["session"],
+        f"{now_utc:%H:%M} UTC — inside the thin-spread window")
 
     highs, lows = ind.last_swings(entry_df)
-    return _finalise(out, direction=direction, reasons=reasons, missing=missing,
-                     trigger_present=broke, e=e, entry_df=entry_df,
-                     highs=highs, lows=lows, atr_e=float(e["atr"]), spec=spec,
-                     inst=inst, balance=balance, risk_pct=risk_pct,
-                     risk_usd=risk_usd, now_utc=now_utc, in_session=in_sess,
-                     short_history=b["ema_slow_n"] < 200,
-                     adx_trend=t["adx"])
+    res = _finalise(out, direction=direction, reasons=reasons, missing=missing,
+                    trigger_present=broke, e=e, entry_df=entry_df,
+                    highs=highs, lows=lows, atr_e=atr_e, spec=spec,
+                    inst=inst, balance=balance, risk_pct=risk_pct,
+                    risk_usd=risk_usd, now_utc=now_utc, in_session=True,
+                    short_history=b["ema_slow_n"] < 200,
+                    adx_trend=t["adx"],
+                    # The stop this rule was measured with, not the mode's.
+                    sl_band=(C.KAGE_STOP_ATR, C.KAGE_STOP_ATR))
+    # The clock is part of the rule: the edge is flat from 12 to 36 bars and
+    # gone by 6, so the exit has to be honoured live or a different strategy
+    # is being traded.
+    res["time_exit_bars"] = C.KAGE_HOLD
+    return res
 
 
 def _evaluate_ronin(*a, **kw) -> dict:
@@ -407,13 +485,15 @@ REGISTRY: dict[str, Strategy] = {
         best_id="Terbaik untuk swing, bagus untuk intraday"),
     "kage": Strategy(
         "kage", "Kage Protocol",
-        "Volatility squeeze. Waits for Bollinger width to compress to a "
-        "multi-week low, then takes the first close out of the range.",
-        "Squeeze volatilitas. Menunggu lebar Bollinger menyempit ke level "
-        "terendah, lalu masuk pada close pertama di luar range.",
+        "Prior-day break. Waits for price to close a clear 1.5 ATR beyond "
+        "yesterday's high or low, and only during London and New York, "
+        "where the spread is thin enough to keep the edge.",
+        "Break harga kemarin. Menunggu harga close 1,5 ATR di luar high "
+        "atau low kemarin, dan hanya saat London dan New York, ketika "
+        "spread cukup tipis untuk menyisakan keuntungan.",
         evaluate_kage,
-        icon="🥋", best_en="Weak everywhere — swing only, barely",
-        best_id="Lemah di semua mode — hanya swing, itupun tipis"),
+        icon="🥋", best_en="Best for scalp, good for intraday",
+        best_id="Terbaik untuk scalp, bagus untuk intraday"),
 }
 
 ORDER = ("ronin", "crimson", "kage")

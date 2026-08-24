@@ -183,7 +183,8 @@ def _in_session(now: datetime, spec: C.ModeSpec) -> bool:
 
 
 def _build_levels(entry_px: float, *, direction, highs, lows, atr_e,
-                  spec, inst, balance, risk_pct, risk_usd=None) -> tuple[dict, Optional[float], bool]:
+                  spec, inst, balance, risk_pct, risk_usd=None,
+                  sl_band=None) -> tuple[dict, Optional[float], bool]:
     """Stop, targets and size for an entry at `entry_px`.
     Shared by every strategy. The rules that pick a direction differ; the
     arithmetic that turns a direction into a risked position does not.
@@ -192,10 +193,19 @@ def _build_levels(entry_px: float, *, direction, highs, lows, atr_e,
     Structure places the stop — the swing the trade is wrong beneath — but
     only inside the band the mode's volatility justifies. Before this was
     bounded, a swing low 90 points away simply became a 90-point stop.
+
+    sl_band lets one ruleset widen that band, as (floor_mult, ceil_mult) in
+    ATR. It exists because the band is not a neutral safety rail: cost in R
+    is spread divided by stop distance, so scalp's 1.6 ATR ceiling nearly
+    doubles the dealing cost of a trade that would be fine at 3 ATR. A
+    breakout strategy measured with a 3 ATR stop must be allowed to trade
+    one, or the live rule is not the rule that was tested. Omitted, the
+    mode's own band applies exactly as before.
     """
     buffer = C.SL_STRUCT_BUFFER * atr_e
-    floor_d = spec.atr_sl_mult * atr_e
-    ceil_d = spec.max_sl_mult * atr_e
+    floor_mult, ceil_mult = sl_band or (spec.atr_sl_mult, spec.max_sl_mult)
+    floor_d = floor_mult * atr_e
+    ceil_d = ceil_mult * atr_e
 
     if direction == LONG:
         struct = (lows[0][1] - buffer) if lows else entry_px - floor_d
@@ -613,6 +623,20 @@ def evaluate(
                                spec, atr_e, inst)
     if out["order"]["kind"] != "market":
         out["levels"], room_rr, _ = build_levels(out["order"]["price"])
+
+    # Same absolute dealing-cost limit the other rulesets apply. It lives in
+    # both places because this module is its own evaluate(), not a caller of
+    # the shared one, so a guard added only there would leave Ronin — the
+    # default strategy — as the single ruleset without it.
+    _cost_r = inst.cost_r(out["levels"]["risk_points"])
+    if _cost_r is not None and _cost_r > C.MAX_COST_R:
+        out["decision"] = "NO TRADE"
+        out["vetoes"] = list(out.get("vetoes") or []) + [
+            f"Spread alone costs {_cost_r:.0%} of the risk on a "
+            f"{out['levels']['risk_display']} stop — market too thin to trade"
+        ]
+        out["order"] = _order_plan(out["decision"], direction, price, e,
+                                   entry_df, spec, atr_e, inst)
 
     news_hour = now_utc.hour in C.NEWS_WARNING_HOURS_UTC
     if news_hour:

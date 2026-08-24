@@ -802,10 +802,13 @@ STATE_ICON = {"waiting": "⏳", "active": "🟢", "breakeven": "🛡️",
               "tp1": "🤡", "tp2": "🥵", "tp3": "💀",
               "stopped": "❌", "completed": "✅",
               "expired": "⌛", "cancelled": "🚫"}
-STATE_WORD = {"waiting": "waiting to fill", "active": "running",
-              "breakeven": "risk-free, TP1 banked", "stopped": "stopped out",
-              "completed": "closed", "expired": "expired",
-              "cancelled": "cancelled"}
+# Lifecycle wording lives in the translation table; this maps a state to its
+# key so an Indonesian user does not get an English status line.
+STATE_KEY = {"waiting": "upd_st_waiting", "active": "upd_st_active",
+             "breakeven": "upd_st_breakeven", "stopped": "upd_st_stopped",
+             "completed": "upd_st_completed", "expired": "upd_st_expired",
+             "cancelled": "upd_st_cancelled", "tp1": "upd_st_tp1",
+             "tp2": "upd_st_tp2", "tp3": "upd_st_tp3"}
 
 
 def _signal_line(r, lang) -> str:
@@ -819,18 +822,29 @@ def _signal_line(r, lang) -> str:
     sname = f" · {strat.icon} {strat.name}" if strat else ""
 
     out = f"{icon} <b>{html.escape(name)}</b> {side} · {r.get('mode','').upper()}{sname}\n"
-    out += f"   {STATE_WORD.get(st, st)}"
+    key = STATE_KEY.get(st)
+    out += f"   {i18n.t(key, lang) if key else st}"
     if hit:
-        out += " · " + " ".join(STATE_ICON.get(f"tp{n}", "🎯") for n in hit) + " hit"
+        out += (" · " + " ".join(STATE_ICON.get(f"tp{n}", "🎯") for n in hit)
+                + " " + i18n.t("upd_hit", lang))
     out += "\n"
 
     fmt = inst.fmt if inst else (lambda v: f"{v}")
-    out += f"   📍 {fmt(r['entry'])}  🛑 {fmt(r.get('stop_moved') or r['stop'])}\n"
+    # Whether the stop has been moved to entry is the single most useful fact
+    # about a running trade — it is the difference between still risking a
+    # full R and risking nothing — so it gets its own line rather than being
+    # inferred from a stop price that happens to equal the entry.
+    moved = r.get("stop_moved")
+    out += f"   📍 {fmt(r['entry'])}  🛑 {fmt(moved or r['stop'])}\n"
+    if moved and st not in journal.FINAL_STATES:
+        out += (f"   🛡️ <b>{i18n.t('upd_be_moved', lang)}</b>"
+                f"  <i>({i18n.t('upd_be_orig', lang)} {fmt(r['stop'])})</i>\n")
     tps = r.get("tps") or []
     nxt = [n for n in range(1, len(tps) + 1) if n not in hit]
     if nxt and st not in journal.FINAL_STATES:
         n = nxt[0]
-        out += f"   next {STATE_ICON.get(f'tp{n}','🎯')} TP{n} {fmt(tps[n-1])}\n"
+        out += (f"   {i18n.t('upd_next', lang)} "
+                    f"{STATE_ICON.get(f'tp{n}','🎯')} TP{n} {fmt(tps[n-1])}\n")
     if r.get("r") is not None:
         rr = float(r["r"])
         out += f"   {'🟩' if rr > 0 else '🟥'} <b>{rr:+.2f}R</b>\n"

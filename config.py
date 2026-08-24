@@ -51,6 +51,16 @@ ACCOUNT_BALANCE = float(_get("ACCOUNT_BALANCE", "5000"))
 RISK_PCT = float(_get("RISK_PCT", "1.0"))          # % of balance per trade
 CONTRACT_SIZE = float(_get("CONTRACT_SIZE", "100"))
 
+# The most a trade may pay in dealing cost, as a share of its own risk.
+# Cost in R is spread / stop distance, so a tight stop is expensive: the
+# recorded backtests contain trades paying 2.14 R in spread alone to open,
+# which need a 214% edge to break even. Those come from bars where the tape
+# is frozen and ATR collapses, and the existing "dead tape" veto misses them
+# because it is relative — over a long freeze the rolling median ATR falls
+# too, so the ratio looks normal. This limit is absolute and does not care
+# why the stop is small.
+MAX_COST_R = float(_get("MAX_COST_R", "0.20"))
+
 # ---------------------------------------------------------------- data source
 DATA_PROVIDER = _get("DATA_PROVIDER", "twelvedata").lower()
 OANDA_TOKEN = _get("OANDA_TOKEN")
@@ -96,7 +106,13 @@ MODES = {
         "scalp", "5min", "15min", "1h",
         ((7, 0, 11, 0), (12, 30, 16, 30)),
         min_rr=1.3, atr_sl_mult=0.8, max_sl_mult=1.6,
-        tp_multiples=(1.0, 2.0, 3.0), bars=300,
+        # 576 bars = 48h of 5min. Kage reads the PRIOR calendar day's high
+        # and low, and 300 bars is only 25h, so the prior day arrives
+        # truncated — median 163 of its 288 bars — and the level is simply
+        # wrong on half the signals. Measured: 463 real signals lost, 684
+        # phantom ones gained, t 3.09 -> 2.10. Every other ruleset is
+        # indifferent to the extra history.
+        tp_multiples=(1.0, 2.0, 3.0), bars=576,
     ),
     "intraday": ModeSpec(
         "intraday", "15min", "1h", "4h",
@@ -239,13 +255,35 @@ CRIMSON_WEIGHTS = {
 }
 
 # Kage Protocol — volatility squeeze. Weights total 100.
-KAGE_BB_PERIOD = int(_get("KAGE_BB_PERIOD", "20"))
-KAGE_BB_K = float(_get("KAGE_BB_K", "2.0"))
-KAGE_SQUEEZE_LOOKBACK = int(_get("KAGE_SQUEEZE_LOOKBACK", "120"))
-KAGE_SQUEEZE_PCTILE = float(_get("KAGE_SQUEEZE_PCTILE", "0.25"))
+# Kage Protocol — prior-day extension breakout. Replaced the Bollinger
+# squeeze in Aug 2026 because the squeeze measured -0.357 R per trade at
+# scalp over 871 trades and could not be rescued by tuning.
+#
+# Price must break k ATR CLEAR of yesterday's high or low and close there.
+# The distance matters: at k=0 the same rule earns +0.015 R and at k=1.5 it
+# earns +0.090, because a level is only meaningful once price has committed
+# past it rather than merely touched it. Fading the touch instead loses
+# money in all four quarters (-0.077 R, t -2.45), so the direction of this
+# rule is not a coin flip dressed up.
+KAGE_BUFFER_ATR = float(_get("KAGE_BUFFER_ATR", "1.5"))
+# The stop the rule was measured with. Cost in R is spread over stop
+# distance, so scalp's 1.6 ATR ceiling would nearly double the dealing cost
+# and take net from +0.115 to +0.053 — the same edge, priced out.
+KAGE_STOP_ATR = float(_get("KAGE_STOP_ATR", "3.0"))
+# Bars before the trade is abandoned. Flat from 12 to 36; 6 breaks it.
+KAGE_HOLD = int(_get("KAGE_HOLD", "18"))
+# Only where the spread is thin. Gold costs 0.25-0.35 through London and NY
+# and 1.20 at the 21:00-23:00 rollover; the rule's profit is concentrated in
+# exactly the hours a retail broker charges most for, so trading it around
+# the clock hands the edge back. 07:00-21:00 UTC keeps it.
+KAGE_HOURS_UTC = (7, 21)
+# The prior day must be at least half present in the data before its high
+# and low mean anything. Also kills the frozen weekend, where Saturday's
+# "range" is a third of a point.
+KAGE_MIN_PRIOR_FRACTION = float(_get("KAGE_MIN_PRIOR_FRACTION", "0.5"))
 KAGE_WEIGHTS = {
-    "squeeze": 28, "expansion": 32, "bias_agree": 20,
-    "rsi_room": 12, "session": 8,
+    "break": 34, "commitment": 22, "clean_level": 16,
+    "room": 12, "session": 16,
 }
 
 # Zanshin Sweep — liquidity grab at a tested level. Weights total 100.

@@ -292,12 +292,49 @@ def do_signal(chat_id: int, symbol_key: str, mode: str,
     deliver(chat_id, message_id, text, symbol_key, mode, verbose)
 
 
-def do_backtest(chat_id: int, symbol_key: str, mode: str, calibrate: bool = False):
+def _backtest_text(stats: dict, inst, mode: str, bars: int, tf: str,
+                   lang: str) -> str:
+    """The Telegram view of a backtest.
+
+    backtest.summarise() also returns a monospace report, which is right for
+    a console and wrong here: a beginner reading a column headed "pred" or
+    "exp R" learns nothing. This keeps the same numbers and says what they
+    mean, and it drops the two diagnostic tables entirely — whether the
+    confidence score is monotone is a question for /calibration, not for
+    somebody who just wants to know if the thing works.
+    """
+    n = stats["trades"]
+    if not n:
+        return f"{i18n.t('bt_title', lang)}\n━━━━━━━━━━━━━━━━━━━━\n\n" \
+               + i18n.t("bt_none", lang)
+
+    exp = stats["expectancy_r"]
+    total = exp * n
+    out = f"{i18n.t('bt_title', lang)}  ·  <b>{inst.display} {mode}</b>\n"
+    out += "━━━━━━━━━━━━━━━━━━━━\n"
+    out += i18n.t("bt_intro", lang, bars=bars, tf=tf) + "\n\n"
+    out += (i18n.t("bt_good", lang) if exp > 0 else i18n.t("bt_bad", lang)) + "\n\n"
+    out += f"🔢 {i18n.t('bt_trades', lang)}: <b>{n}</b>\n"
+    out += (f"🎯 {i18n.t('bt_win', lang)}: <b>{stats['win_rate']:.0%}</b>"
+            f"  {_pct_bar(stats['win_rate'])}\n")
+    out += f"📊 {i18n.t('bt_exp', lang)}: <b>{exp:+.2f}R</b>\n"
+    out += f"💰 {i18n.t('bt_total', lang)}: <b>{total:+.1f}R</b>\n"
+    out += f"📉 {i18n.t('bt_dd', lang)}: <b>{stats['max_dd_r']:.1f}R</b>\n"
+    out += f"🤡 {i18n.t('bt_tp1', lang)}: <b>{stats['tp1_rate']:.0%}</b>\n\n"
+    out += i18n.t("bt_r_note", lang)
+    if n < 30:
+        out += "\n\n" + i18n.t("bt_thin", lang, n=n)
+    return out
+
+
+def do_backtest(chat_id: int, symbol_key: str, mode: str,
+                calibrate: bool = False, user_id: int = 0):
     inst = I.BY_KEY.get(symbol_key, I.GOLD)
     symbol = inst.symbol
     spec = C.MODES[mode]
+    lang = lang_of(user_id)
 
-    send(chat_id, f"⏱ Backtesting {symbol} {mode}. Takes about a minute.")
+    send(chat_id, i18n.t("bt_running", lang, sym=inst.display, mode=mode))
     try:
         from backtest import build_calibration, write_calibration
         from backtest import run as backtest_run
@@ -306,25 +343,24 @@ def do_backtest(chat_id: int, symbol_key: str, mode: str, calibrate: bool = Fals
         # gives a webhook about 60 seconds, so this is the one command here that
         # has to be sized against both. See config.BACKTEST_BARS.
         df = fetch_ohlc(symbol, spec.entry_tf, C.BACKTEST_BARS)
-        stats, report = backtest_run(df, mode)
-        text = (f"<b>{symbol} {mode} backtest</b>\n{len(df)} × {spec.entry_tf} bars\n"
-                f"<pre>{html.escape(report)}</pre>")
+        stats, _report = backtest_run(df, mode)
+        text = _backtest_text(stats, inst, mode, len(df), spec.entry_tf, lang)
 
         if calibrate:
             trades = stats.get("trade_log") or []
             if len(trades) < C.CALIBRATION_MIN_TRADES:
-                text += (f"\n⚠️ Not calibrated: {len(trades)} trades is under the "
-                         f"{C.CALIBRATION_MIN_TRADES}-trade minimum. This window "
-                         f"was too quiet. For a bigger sample run it from a "
-                         f"console:\n<code>python3 backtest.py --mode {mode} "
-                         f"--live --calibrate</code>")
+                text += (f"\n\n⚠️ Not calibrated: {len(trades)} trades is under "
+                         f"the {C.CALIBRATION_MIN_TRADES}-trade minimum. This "
+                         f"window was too quiet. For a bigger sample run it "
+                         f"from a console:\n<code>python3 backtest.py --mode "
+                         f"{mode} --live --calibrate</code>")
             else:
                 entry = build_calibration(trades, mode, symbol, len(df), "telegram")
                 write_calibration(entry, mode, symbol)
-                text += (f"\n✅ Calibrated {mode} on {len(trades)} trades. Signals "
-                         f"now quote measured odds — see /calibration.")
+                text += (f"\n\n✅ Calibrated {mode} on {len(trades)} trades. "
+                         f"Signals now quote measured odds — see /calibration.")
     except DataError as exc:
-        text = f"⚠️ <b>{i18n.t('data_problem')}</b>\n{html.escape(str(exc))}"
+        text = f"⚠️ <b>{i18n.t('data_problem', lang)}</b>\n{html.escape(str(exc))}"
     except Exception as exc:  # noqa: BLE001
         log.error("backtest failed: %s", traceback.format_exc())
         text = f"⚠️ Backtest error: <code>{html.escape(type(exc).__name__)}</code>"
@@ -332,9 +368,8 @@ def do_backtest(chat_id: int, symbol_key: str, mode: str, calibrate: bool = Fals
     send(chat_id, text)
 
 
-def do_calibration(chat_id: int):
-    send(chat_id, "<b>Probability calibration</b>\n"
-                  f"<pre>{html.escape(prob.calibration_report())}</pre>")
+def do_calibration(chat_id: int, user_id: int):
+    send(chat_id, prob.calibration_report(lang_of(user_id)))
 
 
 # --------------------------------------------------------------------------- #
@@ -765,34 +800,85 @@ def do_signal_command(chat_id: int, user_id: int, args: list[str]):
               risk_display=risk_display)
 
 
+def do_start(chat_id: int, user_id: int):
+    """The first screen. Deliberately reachable without a subscription.
+
+    A stranger's very first message is /start, and at that point they have no
+    access and no idea what the bot is. Answering "not authorised" teaches
+    them nothing and gives them no way to ask. So: pick a language, then a
+    welcome that says what this is and — if they cannot use it yet — the one
+    piece of information they need, which is their own ID.
+    """
+    tg("sendMessage", chat_id=chat_id,
+       text=i18n.t("start_pick", lang_of(user_id)), parse_mode="HTML",
+       reply_markup={"inline_keyboard": [[
+           {"text": "🇬🇧 English", "callback_data": "lang|en"},
+           {"text": "🇮🇩 Bahasa Indonesia", "callback_data": "lang|id"},
+       ]]})
+
+
+def send_welcome(chat_id: int, user_id: int, lang: str):
+    out = i18n.t("welcome", lang) + "\n\n"
+    out += (i18n.t("welcome_open", lang) if allowed(user_id)
+            else i18n.t("welcome_locked", lang, uid=user_id))
+    send(chat_id, out)
+
+
 def help_text(lang: str = i18n.EN) -> str:
-    """§23. Only commands that actually work on a free data plan."""
-    t = lambda k: i18n.t(k, lang)
-    return (
-        "⚔️ <b>BENIHANA COMMANDS</b>\n\n"
-        f"📡 <b>{t('sec_signals')}</b>\n"
-        "<code>/signal xauusd intraday</code>\n"
-        "<code>/signal xauusd scalp risk 20$</code>\n"
-        "<code>/signal eurusd swing risk 300k IDR</code>\n"
-        "<code>/signals</code> · <code>/scan</code> · <code>/cancel &lt;id&gt;</code>\n"
-        "<code>/setconf 80</code> · <code>/strategy</code> · <code>/symbols</code>\n\n"
-        f"📶 <b>{t('sec_open')}</b>\n"
-        "<code>/update</code> · <code>/swingupdate</code>\n\n"
-        f"📊 <b>{t('sec_performance')}</b>\n"
-        "<code>/daily</code> · <code>/weekly</code> · <code>/monthly</code>\n"
-        "<code>/stats xauusd</code> · <code>/history</code>\n"
-        "<code>/backtest intraday calibrate</code> · <code>/calibration</code>\n\n"
-        f"🛡️ <b>{t('sec_risk')}</b>\n"
-        "<code>/management on 1000$ 1 5 5 5</code>\n"
-        "<code>/management off</code>\n\n"
-        f"⚙️ <b>{t('sec_settings')}</b>\n"
-        "<code>/language english</code> · <code>/language bahasa</code>\n"
-        "<code>/settings</code> · <code>/status</code> · <code>/resetdata</code>\n"
-        "<code>/subscription</code> · <code>/whoami</code>\n\n"
-        f"💬 <b>{t('sec_other')}</b>\n"
-        "<code>/news</code> · <code>/motivation</code> · <code>/help</code>\n\n"
-        f"<i>{t('help_footer')}</i>"
-    )
+    """Every command with one line saying what it is for.
+
+    A bare list of slash commands tells a new user nothing — they can see the
+    names, what they cannot see is which one to type first or what /setconf
+    even means. So each line is command + purpose, in their language.
+    """
+    t = lambda k: i18n.t(k, lang)                    # noqa: E731
+    L = ["⚔️ <b>BENIHANA COMMANDS</b>", ""]
+
+    def block(title, rows):
+        L.append(f"<b>{title}</b>")
+        for cmd, key in rows:
+            L.append(f"<code>{cmd}</code>\n   <i>{t(key)}</i>")
+        L.append("")
+
+    block(f"📡 {t('sec_signals')}", [
+        ("/signal xauusd intraday", "h_signal"),
+        ("/signal xauusd scalp risk 20$", "h_signal_risk"),
+        ("/scan", "h_scan"),
+        ("/strategy", "h_strategy"),
+        ("/setconf 80", "h_setconf"),
+        ("/symbols", "h_symbols"),
+        ("/cancel &lt;id&gt;", "h_cancel"),
+    ])
+    block(f"📶 {t('sec_open')}", [
+        ("/update", "h_update"),
+        ("/swingupdate", "h_swingupdate"),
+        ("/signals", "h_signals"),
+    ])
+    block(f"📊 {t('sec_performance')}", [
+        ("/daily  /weekly  /monthly", "h_periods"),
+        ("/history", "h_history"),
+        ("/stats xauusd", "h_stats"),
+        ("/backtest intraday", "h_backtest"),
+        ("/calibration", "h_calibration"),
+    ])
+    block(f"🛡️ {t('sec_risk')}", [
+        ("/management on 1000$ 1 5 5 5", "h_management_on"),
+        ("/management off", "h_management_off"),
+    ])
+    block(f"⚙️ {t('sec_settings')}", [
+        ("/language english", "h_language"),
+        ("/settings", "h_settings"),
+        ("/status", "h_status"),
+        ("/subscription", "h_subscription"),
+        ("/resetdata", "h_resetdata"),
+    ])
+    block(f"💬 {t('sec_other')}", [
+        ("/news", "h_news"),
+        ("/motivation", "h_motivation"),
+        ("/help", "h_help"),
+    ])
+    L.append(f"<i>{t('help_footer')}</i>")
+    return "\n".join(L)
 
 
 # --------------------------------------------------------------------------- #
@@ -1067,6 +1153,12 @@ def handle_message(msg: dict):
         do_subscription(chat_id, user_id)
         return
 
+    # Also before the gate: a stranger's first message is /start, and they
+    # need the welcome and their own ID far more than a refusal.
+    if cmd == "/start":
+        do_start(chat_id, user_id)
+        return
+
     if not allowed(user_id):
         # Tell them their ID. Without it they cannot ask for access, and
         # "not authorised" on its own is a dead end.
@@ -1076,7 +1168,7 @@ def handle_message(msg: dict):
 
     lang = lang_of(user_id)
 
-    if cmd in ("/start", "/help", "/menu"):
+    if cmd in ("/help", "/menu"):
         send(chat_id, help_text(lang))
     elif cmd == "/language":
         do_language(chat_id, user_id, args)
@@ -1116,9 +1208,9 @@ def handle_message(msg: dict):
     elif cmd == "/backtest":
         calibrate = any(a.lower().lstrip("-") == "calibrate" for a in args)
         symbol_key, mode, _ = parse_args(args)
-        do_backtest(chat_id, symbol_key, mode, calibrate)
+        do_backtest(chat_id, symbol_key, mode, calibrate, user_id)
     elif cmd == "/calibration":
-        do_calibration(chat_id)
+        do_calibration(chat_id, user_id)
     elif cmd == "/stats":
         symbol_key, mode, _ = parse_args(args)
         do_stats(chat_id, symbol_key, mode if any(
@@ -1139,8 +1231,20 @@ def handle_message(msg: dict):
 
 
 def handle_callback(cb: dict):
-    tg("answerCallbackQuery", callback_query_id=cb["id"], text="Refreshing…")
     user_id = cb.get("from", {}).get("id", 0)
+    data = cb.get("data") or ""
+    msg = cb.get("message", {})
+
+    # The language picker is part of /start, so it has to work before the
+    # user has any access at all.
+    if data.startswith("lang|"):
+        tg("answerCallbackQuery", callback_query_id=cb["id"])
+        lang = i18n.ID if data.endswith("|id") else i18n.EN
+        users.update(user_id, language=lang)
+        send_welcome(msg.get("chat", {}).get("id", user_id), user_id, lang)
+        return
+
+    tg("answerCallbackQuery", callback_query_id=cb["id"], text="Refreshing…")
     if not allowed(user_id):
         return
 
@@ -1151,7 +1255,6 @@ def handle_callback(cb: dict):
     except ValueError:
         return
 
-    msg = cb.get("message", {})
     do_signal(msg["chat"]["id"], symbol_key, mode,
               message_id=msg.get("message_id"), verbose=verbose)
 

@@ -46,6 +46,21 @@ OWNER_IDS = {
 SUBSCRIPTIONS_ENABLED = _get("SUBSCRIPTIONS_ENABLED", "0") not in (
     "0", "false", "False", "")
 
+# ---------------------------------------------------------------- scanning
+# These three were deleted with the paid-plan features but /scan, scan_job
+# and scanner all still read them, so /scan raised AttributeError before it
+# reached its own error handling and answered with nothing at all.
+#
+# The default list is only what a free data plan actually serves: FX majors
+# and the two metals. Indices and energy need a paid plan, and a symbol the
+# provider refuses just burns one of the day's 800 requests.
+SCAN_DEADLINE_S = float(_get("SCAN_DEADLINE_S", "45"))
+# Each symbol costs one request per timeframe, so a scan of 8 is ~24 of the
+# daily 800. Raising this is the fastest way to exhaust the quota.
+CRAZY_MAX_SYMBOLS = int(_get("CRAZY_MAX_SYMBOLS", "6"))
+_raw_scan = _get("SCAN_SYMBOLS", "xauusd,eurusd,gbpusd,usdjpy,audusd,xagusd")
+SCAN_SYMBOLS = [s for s in (x.strip().lower() for x in _raw_scan.split(",")) if s]
+
 # ---------------------------------------------------------------- risk config
 ACCOUNT_BALANCE = float(_get("ACCOUNT_BALANCE", "5000"))
 RISK_PCT = float(_get("RISK_PCT", "1.0"))          # % of balance per trade
@@ -332,6 +347,13 @@ LOT_MIN = float(_get("LOT_MIN", "0.01"))
 # Non-USD risk amounts are converted with a live rate, cached this long. There
 # is no hardcoded fallback: a stale rate mis-sizes every position silently.
 FX_RATE_TTL = float(_get("FX_RATE_TTL", "3600"))
+
+# Fallback rate in IDR per USD, used only when the data provider cannot
+# quote USD/IDR — free plans usually carry the majors and not this pair.
+# Empty by default: an absent rate makes the bot decline to size a position,
+# which is the honest answer, but a trader who knows today's rate should be
+# able to say so rather than lose the feature entirely.
+USD_IDR_RATE = _get("USD_IDR_RATE", "")
 
 # ------------------------------------------------------------- user settings
 # Language, strategy, confidence floor and the risk-management envelope, keyed

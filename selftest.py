@@ -809,10 +809,19 @@ def check_commands() -> bool:
 
     src_of_dispatch = _inspect.getsource(F.handle_message)
     UID = 90001
-    real_send, real_allowed = F.send, F.allowed
+    real_send, real_allowed, real_tg = F.send, F.allowed, F.tg
     captured: list[str] = []
     F.send = lambda cid, txt, **k: captured.append(txt)
     F.allowed = lambda uid: True
+
+    def _tg(method, **payload):
+        # /start posts its language picker through tg() directly, because it
+        # needs an inline keyboard. Capturing only send() would report it as
+        # silent and hide whether it answered at all.
+        if method == "sendMessage" and payload.get("text"):
+            captured.append(payload["text"])
+        return {"ok": True, "result": {"message_id": 1}}
+    F.tg = _tg
 
     # Commands that need the network (a quote, a candle history, an API key)
     # are out of scope here; this checks wiring and rendering, not data.
@@ -929,7 +938,7 @@ def check_commands() -> bool:
             failures.append(f"{text} fell through to the unknown-command reply")
             ok = False
 
-    F.send, F.allowed = real_send, real_allowed
+    F.send, F.allowed, F.tg = real_send, real_allowed, real_tg
     J.wipe(UID)
     U.update(UID, management=None)
 
@@ -1431,6 +1440,77 @@ def check_kage_contract() -> bool:
     return ok
 
 
+
+def check_onboarding() -> bool:
+    """A stranger's first message is /start, and at that point they have no
+    subscription. If /start sits behind the access gate they get "not
+    authorised" and no way to ask for access, so the gate placement is the
+    thing worth testing, not the wording.
+    """
+    import flask_app as F
+    import i18n as _i
+    import users as U
+
+    UID = 90003
+    ok = True
+    real_send, real_tg, real_allowed = F.send, F.tg, F.allowed
+    sent, calls = [], []
+    F.send = lambda c, t, **k: sent.append(t)
+    F.tg = lambda m, **p: (calls.append((m, p)) or {"ok": True,
+                                                    "result": {"message_id": 1}})
+    F.allowed = lambda uid: False              # a stranger
+
+    try:
+        F.handle_message({"chat": {"id": 1}, "from": {"id": UID},
+                          "text": "/start"})
+        picker = [p for m, p in calls if m == "sendMessage"]
+        if not picker:
+            print("  x /start sent nothing — it is behind the access gate")
+            return False
+        kb = (picker[-1].get("reply_markup") or {}).get("inline_keyboard") or []
+        datas = [b.get("callback_data") for row in kb for b in row]
+        if sorted(datas) != ["lang|en", "lang|id"]:
+            print(f"  x /start offered {datas}, not both languages")
+            ok = False
+
+        for data, want in (("lang|en", _i.EN), ("lang|id", _i.ID)):
+            sent.clear()
+            F.handle_callback({"id": "x", "from": {"id": UID}, "data": data,
+                               "message": {"chat": {"id": 1}, "message_id": 2}})
+            if U.get(UID).get("language") != want:
+                print(f"  x picking {data} did not set the language")
+                ok = False
+            if not sent:
+                print(f"  x picking {data} sent no welcome")
+                ok = False
+                continue
+            body = sent[0]
+            if str(UID) not in body:
+                print("  x the locked welcome omits the user's own ID, which "
+                      "is the one thing they need to ask for access")
+                ok = False
+            if _i.t("welcome", want).split("\n")[0][:12] not in body:
+                print(f"  x welcome was not in the chosen language ({want})")
+                ok = False
+
+        # With access, the closing block must change rather than still telling
+        # a paying subscriber to go and subscribe.
+        F.allowed = lambda uid: True
+        sent.clear()
+        F.handle_callback({"id": "x", "from": {"id": UID}, "data": "lang|en",
+                           "message": {"chat": {"id": 1}, "message_id": 2}})
+        if sent and "Subscription required" in sent[0]:
+            print("  x a user WITH access is still told to subscribe")
+            ok = False
+    finally:
+        F.send, F.tg, F.allowed = real_send, real_tg, real_allowed
+
+    if ok:
+        print("  onboarding: /start works without access, both languages, "
+              "welcome carries the user's ID")
+    return ok
+
+
 if __name__ == "__main__":
     print("\nBehaviour across market regimes (intraday mode):")
     for k in ("uptrend", "downtrend", "chop"):
@@ -1477,4 +1557,5 @@ if __name__ == "__main__":
     ok &= check_management_lifecycle()
     ok &= check_cost_veto()
     ok &= check_kage_contract()
+    ok &= check_onboarding()
     raise SystemExit(0 if ok else 1)

@@ -259,7 +259,7 @@ async def cmd_calibration(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     if not allowed(update):
         return
     await update.message.reply_text(
-        f"<b>Probability calibration</b>\n<pre>{html.escape(prob.calibration_report())}</pre>",
+        prob.calibration_report(),
         parse_mode=ParseMode.HTML,
     )
 

@@ -295,6 +295,208 @@ S: dict[str, dict[str, str]] = {
     "upd_be_moved": {EN: "stop at breakeven — this trade cannot lose now",
                      ID: "stop di breakeven — trade ini tidak bisa rugi lagi"},
     "upd_be_orig": {EN: "was", ID: "semula"},
+    # /start — the very first screen a stranger sees.
+    "start_pick": {
+        EN: "🌐 <b>Choose your language</b>\n<i>Pilih bahasa Anda</i>",
+        ID: "🌐 <b>Choose your language</b>\n<i>Pilih bahasa Anda</i>",
+    },
+    "welcome": {
+        EN: ("👋 <b>Welcome to Benihana.</b>\n\n"
+             "Your trading sidekick for when you want the market broken down "
+             "without having to dig through everything yourself. 📊\n\n"
+             "Check signals, analyze the market, keep track of what's "
+             "happening, and use a bunch of little tools built to make "
+             "trading a bit easier.\n\n"
+             "Nothing too complicated.\njust useful stuff, all in one "
+             "place. 🫡"),
+        ID: ("👋 <b>Selamat datang di Benihana.</b>\n\n"
+             "Teman trading Anda, untuk saat Anda ingin market dijelaskan "
+             "tanpa harus menggali semuanya sendiri. 📊\n\n"
+             "Cek sinyal, analisa market, pantau apa yang sedang terjadi, "
+             "dan pakai berbagai alat kecil yang dibuat supaya trading "
+             "sedikit lebih mudah.\n\n"
+             "Tidak ribet.\nsekadar hal-hal berguna, semuanya di satu "
+             "tempat. 🫡"),
+    },
+    "welcome_locked": {
+        EN: ("━━━━━━━━━━━━━━━━━━\n"
+             "🔐 <b>Subscription required</b>\n\n"
+             "An active subscription is required to access Benihana Bot and "
+             "its features.\n\n"
+             "Send your ID to the owner to get access: <code>{uid}</code>\n"
+             "and type /help whenever you got the access.\n\n"
+             "💳 subscribe, then come back here to get started."),
+        ID: ("━━━━━━━━━━━━━━━━━━\n"
+             "🔐 <b>Perlu langganan</b>\n\n"
+             "Langganan aktif diperlukan untuk mengakses Benihana Bot dan "
+             "fiturnya.\n\n"
+             "Kirim ID Anda ke pemilik untuk mendapat akses: "
+             "<code>{uid}</code>\n"
+             "lalu ketik /help setelah Anda mendapat akses.\n\n"
+             "💳 berlangganan, lalu kembali ke sini untuk mulai."),
+    },
+    "welcome_open": {
+        EN: ("━━━━━━━━━━━━━━━━━━\n"
+             "✅ <b>You are all set.</b>\n\n"
+             "Type /help to see everything, or go straight to "
+             "<code>/signal xauusd intraday</code> for your first trade "
+             "plan."),
+        ID: ("━━━━━━━━━━━━━━━━━━\n"
+             "✅ <b>Semua sudah siap.</b>\n\n"
+             "Ketik /help untuk melihat semuanya, atau langsung "
+             "<code>/signal xauusd intraday</code> untuk rencana trade "
+             "pertama Anda."),
+    },
+    # One line per command for /help. Say what it is FOR, not what it is.
+    "h_signal": {
+        EN: "Full trade plan for one pair — entry, stop, three targets.",
+        ID: "Rencana trade lengkap satu pair — entry, stop, tiga target.",
+    },
+    "h_signal_risk": {
+        EN: "Same, but sized to the money you name.",
+        ID: "Sama, tapi ukurannya disesuaikan dengan uang yang Anda sebut.",
+    },
+    "h_scan": {
+        EN: "Check every market at once and show which ones are worth a look.",
+        ID: "Cek semua market sekaligus dan tunjukkan mana yang layak dilihat.",
+    },
+    "h_strategy": {
+        EN: "Pick which ruleset finds your signals. Each is best at something.",
+        ID: "Pilih aturan yang mencari sinyal Anda. Tiap satu punya keahlian.",
+    },
+    "h_setconf": {
+        EN: "Only send signals this confident or better. Higher = fewer.",
+        ID: "Hanya kirim sinyal seyakin ini atau lebih. Makin tinggi, makin jarang.",
+    },
+    "h_symbols": {EN: "Every pair the bot can trade.",
+                  ID: "Semua pair yang bisa ditradingkan bot."},
+    "h_cancel": {EN: "Drop a signal you are not going to take.",
+                 ID: "Batalkan sinyal yang tidak jadi Anda ambil."},
+    "h_update": {
+        EN: "How your open scalps and intraday trades are doing right now.",
+        ID: "Kondisi scalp dan intraday Anda yang masih terbuka sekarang.",
+    },
+    "h_swingupdate": {EN: "Same, but only the swing trades.",
+                      ID: "Sama, tapi khusus trade swing."},
+    "h_signals": {EN: "A short list of everything still running.",
+                  ID: "Daftar singkat semua yang masih berjalan."},
+    "h_periods": {EN: "What you made today, this week, this month.",
+                  ID: "Hasil Anda hari ini, minggu ini, bulan ini."},
+    "h_history": {EN: "Your last dozen closed trades, win or lose.",
+                  ID: "Selusin trade terakhir yang sudah tutup, menang atau kalah."},
+    "h_stats": {EN: "Everything the bot recorded on one pair.",
+                ID: "Semua catatan bot untuk satu pair."},
+    "h_backtest": {
+        EN: "Replay the strategy on real past prices and show what it did.",
+        ID: "Putar ulang strategi pada harga masa lalu dan lihat hasilnya.",
+    },
+    "h_calibration": {
+        EN: "Are the quoted odds honest? Compares them against real results.",
+        ID: "Apakah peluang yang ditampilkan jujur? Dibandingkan hasil nyata.",
+    },
+    "h_management_on": {
+        EN: "Set your balance, risk %, daily loss limit, max trades, profit "
+            "target — then I size every trade for you.",
+        ID: "Atur saldo, risiko %, batas rugi harian, maks trade, target "
+            "profit — lalu saya hitung ukuran tiap trade.",
+    },
+    "h_management_off": {EN: "Turn that off and forget the numbers.",
+                         ID: "Matikan itu dan lupakan angkanya."},
+    "h_language": {EN: "Switch between English and Bahasa Indonesia.",
+                   ID: "Ganti antara English dan Bahasa Indonesia."},
+    "h_settings": {EN: "What you currently have configured.",
+                   ID: "Pengaturan Anda saat ini."},
+    "h_status": {EN: "One screen: strategy, open trades, today, risk limits.",
+                 ID: "Satu layar: strategi, trade terbuka, hari ini, batas risiko."},
+    "h_subscription": {EN: "When your access ends.",
+                       ID: "Kapan akses Anda berakhir."},
+    "h_resetdata": {EN: "Erase your history and start the numbers from zero.",
+                    ID: "Hapus riwayat Anda dan mulai angka dari nol."},
+    "h_news": {EN: "Big releases coming up that move gold.",
+               ID: "Rilis besar yang akan menggerakkan emas."},
+    "h_motivation": {EN: "A line to read before you revenge-trade.",
+                     ID: "Satu kalimat sebelum Anda balas dendam ke market."},
+    "h_help": {EN: "This list.", ID: "Daftar ini."},
+    # /backtest, in plain language.
+    "bt_title": {EN: "📈 <b>BACKTEST</b>", ID: "📈 <b>BACKTEST</b>"},
+    "bt_running": {
+        EN: "⏱ <b>Replaying {sym} on {mode}…</b>\n<i>Takes about a minute — "
+            "I am walking the strategy bar by bar through real history.</i>",
+        ID: "⏱ <b>Memutar ulang {sym} di {mode}…</b>\n<i>Sekitar satu menit — "
+            "strategi dijalankan bar demi bar pada data asli.</i>",
+    },
+    "bt_intro": {
+        EN: "<i>What the strategy would have done over {bars} {tf} bars — "
+            "real prices, real spread, no hindsight.</i>",
+        ID: "<i>Apa yang akan dilakukan strategi selama {bars} bar {tf} — "
+            "harga asli, spread asli, tanpa melihat masa depan.</i>",
+    },
+    "bt_trades": {EN: "Trades taken", ID: "Trade diambil"},
+    "bt_win": {EN: "Won", ID: "Menang"},
+    "bt_exp": {EN: "Average per trade", ID: "Rata-rata per trade"},
+    "bt_total": {EN: "Total", ID: "Total"},
+    "bt_dd": {EN: "Worst losing run", ID: "Rugi beruntun terburuk"},
+    "bt_tp1": {EN: "Reached TP1", ID: "Mencapai TP1"},
+    "bt_r_note": {
+        EN: "<i>R means one unit of your risk. +0.20R average = if you risk "
+            "$50 a trade, you made about $10 per trade over this window.</i>",
+        ID: "<i>R berarti satu satuan risiko Anda. Rata-rata +0,20R = jika "
+            "Anda berisiko $50 per trade, untung sekitar $10 per trade.</i>",
+    },
+    "bt_good": {EN: "✅ Made money over this window",
+                ID: "✅ Menghasilkan untung di periode ini"},
+    "bt_bad": {EN: "❌ Lost money over this window",
+               ID: "❌ Merugi di periode ini"},
+    "bt_thin": {
+        EN: "⚠️ <b>Only {n} trades</b> — too few to mean much. One window is "
+            "not proof; treat this as a sanity check, not a verdict.",
+        ID: "⚠️ <b>Hanya {n} trade</b> — terlalu sedikit untuk disimpulkan. "
+            "Satu periode bukan bukti; anggap ini pemeriksaan, bukan vonis.",
+    },
+    "bt_none": {
+        EN: "😴 <b>No trades at all</b>\n<i>The strategy found nothing to take "
+            "in this window. That is a real answer, not an error.</i>",
+        ID: "😴 <b>Tidak ada trade sama sekali</b>\n<i>Strategi tidak menemukan "
+            "peluang di periode ini. Itu jawaban nyata, bukan error.</i>",
+    },
+    # /calibration, written for someone who has never heard the word.
+    "cal_title": {EN: "🎲 <b>ARE THE ODDS HONEST?</b>",
+                  ID: "🎲 <b>APAKAH PELUANGNYA JUJUR?</b>"},
+    "cal_intro": {
+        EN: ("Every signal quotes a chance of reaching each target. These are "
+             "the rates actually recorded on past trades — so you can see "
+             "whether those numbers are worth believing."),
+        ID: ("Setiap sinyal mencantumkan peluang mencapai tiap target. Ini "
+             "adalah angka yang benar-benar tercatat dari trade sebelumnya — "
+             "jadi Anda bisa menilai apakah angka itu layak dipercaya."),
+    },
+    "cal_overall": {EN: "📊 How often targets were reached",
+                    ID: "📊 Seberapa sering target tercapai"},
+    "cal_per_strategy": {EN: "⚔️ Chance of TP1, by strategy",
+                         ID: "⚔️ Peluang TP1, per strategi"},
+    "cal_shrink": {
+        EN: ("<i>Thin samples are pulled toward the model by {n} pretend "
+             "trades, so a handful of lucky results cannot swing the number. "
+             "That is deliberate.</i>"),
+        ID: ("<i>Sampel tipis ditarik ke arah model sebanyak {n} trade semu, "
+             "agar beberapa hasil beruntung tidak mengubah angkanya. Itu "
+             "memang disengaja.</i>"),
+    },
+    "cal_measured_on": {EN: "Measured on {when}.", ID: "Diukur pada {when}."},
+    "cal_none": {
+        EN: ("⚠️ Nothing has been measured yet, so every probability you see "
+             "is the model's <b>estimate</b> — barrier maths, never checked "
+             "against a real trade."),
+        ID: ("⚠️ Belum ada yang diukur, jadi semua peluang yang Anda lihat "
+             "masih <b>perkiraan</b> model — hitungan matematis yang belum "
+             "pernah dicek dengan trade nyata."),
+    },
+    "cal_none_fix": {
+        EN: "Run <code>python build_calibration.py</code> to replace the "
+            "estimate with counted results.",
+        ID: "Jalankan <code>python build_calibration.py</code> untuk "
+            "mengganti perkiraan dengan hasil terukur.",
+    },
     "sub_yours": {EN: "🎟 <b>YOUR ACCESS</b>", ID: "🎟 <b>AKSES ANDA</b>"},
     "sub_owner": {
         EN: "👑 Owner — unlimited, never expires.",
@@ -540,10 +742,30 @@ S: dict[str, dict[str, str]] = {
              "<code>100 USD</code> atau <code>300k IDR</code>."),
     },
     "fx_unavailable": {
-        EN: ("Cannot convert {ccy} right now — the exchange rate is "
-             "unavailable, and guessing it would mis-size your position."),
-        ID: ("Tidak bisa mengonversi {ccy} sekarang — kurs tidak tersedia, "
-             "dan menebaknya akan membuat ukuran posisi salah."),
+        EN: ("💱 <b>No {ccy} rate available</b>\n\n"
+             "Your data plan does not quote USD/{ccy}, so I cannot turn "
+             "{ccy} into a position size — and guessing would size your "
+             "trade wrong.\n\n"
+             "<b>Two ways round it:</b>\n"
+             "1. Ask in dollars instead — <code>risk 20$</code>\n"
+             "2. Set the rate once, in <code>pa_config.py</code>:\n"
+             "   <code>USD_{ccy}_RATE = \"16200\"</code>\n"
+             "   then Reload. Update it when the rate moves."),
+        ID: ("💱 <b>Kurs {ccy} tidak tersedia</b>\n\n"
+             "Paket data Anda tidak menyediakan USD/{ccy}, jadi {ccy} tidak "
+             "bisa diubah menjadi ukuran posisi — dan menebaknya akan "
+             "membuat ukuran trade salah.\n\n"
+             "<b>Dua cara mengatasinya:</b>\n"
+             "1. Pakai dolar saja — <code>risk 20$</code>\n"
+             "2. Atur kursnya sekali di <code>pa_config.py</code>:\n"
+             "   <code>USD_{ccy}_RATE = \"16200\"</code>\n"
+             "   lalu Reload. Perbarui saat kurs berubah."),
+    },
+    "fx_manual": {
+        EN: "<i>💱 {ccy} converted at {rate} per USD — your configured rate, "
+            "not a live quote.</i>",
+        ID: "<i>💱 {ccy} dikonversi di {rate} per USD — kurs yang Anda atur "
+            "sendiri, bukan kurs langsung.</i>",
     },
 
     # --------------------------------------------------------------- errors

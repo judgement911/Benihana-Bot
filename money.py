@@ -134,16 +134,51 @@ def usd_rate(currency: str, fetch=None) -> Optional[float]:
 
     if fetch is None:
         from data import fetch_ohlc as fetch          # noqa: PLC0415
+
+    # Free data plans carry the majors but often not USD/IDR, and providers
+    # disagree on how the pair is spelled, so try both before giving up.
+    for symbol in (f"USD/{currency}", f"USD{currency}"):
+        try:
+            df = fetch(symbol, "1day", 5)
+            per_usd = float(df["close"].iloc[-1])     # e.g. 16,200 IDR per USD
+        except Exception:
+            continue
+        if per_usd > 0:
+            rate = 1.0 / per_usd
+            _rate_cache[currency] = (time.time(), rate)
+            return rate
+
+    if hit:
+        return hit[1]                                 # stale beats nothing
+
+    # Last resort: a rate the operator typed in. Still not a hardcoded
+    # constant — it is absent unless somebody deliberately set it, and the
+    # signal says the number came from configuration rather than the market,
+    # so nobody is sized from a rate they did not agree to.
+    manual = _manual_rate(currency)
+    if manual:
+        return 1.0 / manual
+    return None
+
+
+def _manual_rate(currency: str) -> Optional[float]:
+    """Units of `currency` per USD, from configuration. None if unset."""
+    raw = getattr(C, f"USD_{currency.upper()}_RATE", "") or ""
     try:
-        df = fetch(f"USD/{currency}", "1day", 5)
-        per_usd = float(df["close"].iloc[-1])         # e.g. 16,200 IDR per USD
-    except Exception:
-        return hit[1] if hit else None                # stale beats nothing
-    if per_usd <= 0:
+        v = float(str(raw).replace(",", "").strip())
+    except (TypeError, ValueError):
         return None
-    rate = 1.0 / per_usd
-    _rate_cache[currency] = (time.time(), rate)
-    return rate
+    return v if v > 0 else None
+
+
+def rate_source(currency: str) -> str:
+    """Where the last usable rate came from, for the message that shows it."""
+    currency = currency.upper()
+    if currency == USD:
+        return "none"
+    if _rate_cache.get(currency):
+        return "market"
+    return "manual" if _manual_rate(currency) else "missing"
 
 
 def to_usd(value: float, currency: str, fetch=None) -> Optional[float]:

@@ -523,61 +523,49 @@ def drag_note(res: dict, limit: int = 3) -> str:
     )
 
 
-def calibration_report() -> str:
-    """Plain-text answer to '/calibration': is the probability measured, or is
-    the bot just doing arithmetic on its own opinion?"""
+def calibration_report(lang: str = "en") -> str:
+    """Answer one question in plain language: when the bot says 60%, is it?
+
+    Written as Telegram HTML rather than a monospace table. A beginner
+    reading "bucket / n / TP1 / final / pred" learns nothing; the useful
+    content is whether the odds on their signals were measured against real
+    trades or are still the model's opinion.
+    """
+    import i18n                                   # noqa: PLC0415
     st = calibration_status()
+    t = lambda k, **kw: i18n.t(k, lang, **kw)     # noqa: E731
+
+    head = f"{t('cal_title')}\n━━━━━━━━━━━━━━━━━━━━\n\n"
 
     if not st["present"]:
-        return (
-            "No calibration file.\n\n"
-            "Every probability in a signal is currently a MODEL ESTIMATE: "
-            "barrier maths plus a capped edge term. It has never been checked "
-            "against a real trade.\n\n"
-            "Fix that:\n"
-            "  python build_calibration.py\n\n"
-            "That replays every strategy over the cached candles using the "
-            "live ladder and writes\n"
-            f"{C.CALIBRATION_FILE}. The bot picks it up without a restart."
-        )
+        return (head + t("cal_none") + "\n\n" + t("cal_none_fix"))
 
-    def _pc(v):
-        return f"{v:.0%}" if isinstance(v, (int, float)) else "-"
+    out = head + t("cal_intro") + "\n\n"
 
-    lines = []
-    if st.get("source_note"):
-        lines.append(st["source_note"])
+    def pc(v):
+        return f"{v:.0%}" if isinstance(v, (int, float)) else "—"
+
+    out += f"<b>{t('cal_overall')}</b>\n"
+    for name in ("scalp", "intraday", "swing"):
+        m = st["modes"].get(name)
+        if not m:
+            continue
+        out += (f"  {name}: <b>{pc(m['tp1'])}</b> reach TP1 · "
+                f"{pc(m['tp2'])} TP2 · {pc(m['final'])} TP3"
+                f"  <i>({m['trades']} trades)</i>\n")
+
+    strats = st.get("strategies") or {}
+    if strats:
+        from strategies import REGISTRY               # noqa: PLC0415
+        out += f"\n<b>{t('cal_per_strategy')}</b>\n"
+        for key in sorted(strats):
+            s = REGISTRY.get(key)
+            label = f"{s.icon} {s.name}" if s else key
+            rows = strats[key]
+            parts = [f"{mo[:3]} {pc(v['tp1'])}" for mo, v in sorted(rows.items())]
+            out += f"  {label}: " + " · ".join(parts) + "\n"
+
+    out += "\n" + t("cal_shrink", n=int(C.CALIBRATION_PRIOR_WEIGHT))
     if st.get("generated"):
-        lines.append(f"generated {st['generated']}")
-    lines.append("")
-
-    lines.append("ALL STRATEGIES POOLED")
-    lines.append(f"  {'mode':<9}{'n':>6}{'TP1':>7}{'TP2':>7}{'TP3':>7}")
-    for name, m in sorted(st["modes"].items()):
-        lines.append(f"  {name:<9}{m['trades']:>6}{_pc(m['tp1']):>7}"
-                     f"{_pc(m['tp2']):>7}{_pc(m['final']):>7}")
-    lines.append("")
-
-    # The per-strategy table is the one that actually prices a signal; the
-    # pooled table above is only the fallback when a strategy has too few
-    # trades of its own.
-    if st.get("strategies"):
-        lines.append("PER STRATEGY  (used first when present)")
-        lines.append(f"  {'strategy':<10}{'mode':<9}{'n':>6}{'TP1':>7}"
-                     f"{'TP2':>7}{'TP3':>7}{'avg R':>8}")
-        for key in sorted(st["strategies"]):
-            for mode, t in sorted(st["strategies"][key].items()):
-                avg = (f"{t['avg_r']:+.3f}"
-                       if isinstance(t.get("avg_r"), (int, float)) else "-")
-                lines.append(f"  {key:<10}{mode:<9}{t['trades']:>6}"
-                             f"{_pc(t['tp1']):>7}{_pc(t['tp2']):>7}"
-                             f"{_pc(t['final']):>7}{avg:>8}")
-        lines.append("")
-
-    lines.append(
-        f"Buckets under {C.CALIBRATION_MIN_TRADES} trades are ignored, and every "
-        f"rate is shrunk toward the model by {C.CALIBRATION_PRIOR_WEIGHT:.0f} "
-        "pseudo-trades. Thin samples move the number a little; thick ones move it "
-        "a lot. That is deliberate."
-    )
-    return "\n".join(lines)
+        out += f"\n<i>{t('cal_measured_on', when=str(st['generated'])[:10])}</i>"
+    return out
